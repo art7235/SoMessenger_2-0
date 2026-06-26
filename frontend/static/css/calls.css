@@ -1,0 +1,146 @@
+.call-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(13, 0, 26, 0.95);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: fadeIn 0.3s ease;
+}
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+.call-card {
+    text-align: center;
+    padding: 40px;
+    max-width: 360px;
+    width: 90%;
+}
+.call-avatar-big {
+    font-size: 80px;
+    margin-bottom: 20px;
+    filter: drop-shadow(0 0 30px var(--accent));
+}
+.call-card h2 {
+    color: var(--text-primary);
+    margin-bottom: 8px;
+    font-size: 24px;
+}
+.call-type-label {
+    color: var(--text-secondary);
+    font-size: 16px;
+    margin-bottom: 40px;
+}
+#call-timer {
+    color: var(--accent);
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 30px;
+}
+.call-buttons {
+    display: flex;
+    justify-content: center;
+    gap: 60px;
+    margin-top: 40px;
+}
+.call-btn {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    border: none;
+    font-size: 24px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.2s;
+}
+.call-btn:hover {
+    transform: scale(1.1);
+}
+.call-btn.accept {
+    background: var(--success);
+    color: white;
+}
+.call-btn.reject {
+    background: var(--danger);
+    color: white;
+}
+.call-btn small {
+    font-size: 11px;
+    margin-top: 4px;
+}
+.call-controls {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    margin-top: 40px;
+}
+.call-control-btn {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 22px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.call-control-btn:hover {
+    background: var(--bg-secondary);
+    transform: scale(1.05);
+}
+.call-control-btn.hangup {
+    background: var(--danger);
+    border-color: var(--danger);
+}
+.call-control-btn.muted {
+    background: var(--danger);
+    border-color: var(--danger);
+}
+#remote-video {
+    width: 100%;
+    max-height: 50vh;
+    border-radius: 16px;
+    margin-bottom: 20px;
+    background: #000;
+}
+#local-video {
+    position: absolute;
+    bottom: 120px;
+    right: 20px;
+    width: 120px;
+    height: 160px;
+    border-radius: 12px;
+    border: 2px solid var(--accent);
+    background: #000;
+}
+/* Outgoing call — ringing animation */
+.call-ringing .call-avatar-big {
+    animation: ringPulse 1.5s ease-in-out infinite;
+}
+@keyframes ringPulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+}
+@media (max-width: 768px) {
+    .call-card {
+        padding: 30px 20px;
+    }
+    .call-buttons {
+        gap: 40px;
+    }
+    #local-video {
+        width: 90px;
+        height: 120px;
+        bottom: 140px;
+        right: 16px;
+    }
+}

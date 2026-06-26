@@ -1,0 +1,12 @@
+services:
+  messenger:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app/backend
+      - ./frontend:/app/frontend
+      - ./uploads:/app/backend/uploads
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./somessenger.db
+    restart: always

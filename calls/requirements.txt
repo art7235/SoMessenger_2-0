@@ -1,0 +1,5 @@
+﻿fastapi
+uvicorn
+python-jose[cryptography]
+websockets
+python-multipart
