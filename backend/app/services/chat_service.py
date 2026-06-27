@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 from sqlalchemy.orm import selectinload
 from app.models.chat import Chat, ChatMember
 from app.models.channel import Channel, ChannelPost, ChannelSubscriber
@@ -148,7 +148,31 @@ class ChatService:
             .where(ChatMember.user_id==user_id)
             .options(selectinload(Chat.members).selectinload(ChatMember.user))
             .options(selectinload(Chat.messages)))
-        return r.scalars().unique().all()
+        chats = r.scalars().unique().all()
+
+        # Compute unread_count for each chat
+        for chat in chats:
+            member = next((m for m in chat.members if m.user_id == user_id), None)
+            last_read = member.last_read_message_id if member else None
+            if last_read:
+                unread_q = await db.execute(
+                    select(func.count(Message.id)).where(
+                        Message.chat_id == chat.id,
+                        Message.id > last_read,
+                        Message.is_deleted == False
+                    )
+                )
+                chat.unread_count = unread_q.scalar() or 0
+            else:
+                # count all non-deleted
+                unread_q = await db.execute(
+                    select(func.count(Message.id)).where(
+                        Message.chat_id == chat.id,
+                        Message.is_deleted == False
+                    )
+                )
+                chat.unread_count = unread_q.scalar() or 0
+        return chats
 
     @staticmethod
     async def is_chat_member(db, chat_id, user_id):

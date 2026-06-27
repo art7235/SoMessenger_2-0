@@ -18,18 +18,22 @@ case'reaction':onReactionUpdate(d);break
 case'message_deleted':onMessageDeleted(d.message_id,d.chat_id);break
 case'message_edited':onMessageEdited(d.message_id,d.chat_id,d.content);break
 case'user_online':onUserOnlineStatus(d.user_id,d.is_online);break
-case'incoming_call':onIncomingCall(d.from_user_id,d.from_user_name,d.call_type,d.sdp);break
+case'unread_update':onUnreadUpdate(d);break
+case'incoming_call':onIncomingCall(d.from_user_id,d.from_user_name,d.call_type);break
 }}
 function onNewChat(data){loadChats();showToast('💬 Новый чат!')}
 function onNewMessage(chatId,msg){
 updateChatPreview(chatId,msg)
-if(window.currentChatId===chatId){
-    // In filtered post-comments mode show only replies to the selected channel post.
-    if(window.currentCommentsPostId){
-        const rootId=window.currentCommentsRootId
-        if(!msg.reply_to||String(msg.reply_to.id)!==String(rootId))return
+// Increment unread badge if chat is not currently open
+if(window.currentChatId!==chatId){
+    const item=document.querySelector(`[data-chat-id="${chatId}"]`)
+    if(item){
+        let badge=item.querySelector('.unread-badge')
+        if(!badge){badge=document.createElement('span');badge.className='unread-badge';badge.textContent='0';item.appendChild(badge)}
+        badge.textContent=parseInt(badge.textContent||'0')+1
     }
-    appendMessage(msg);scrollToBottom();return
+}else{
+    appendMessage(msg);scrollToBottom();markChatReadIfNeeded();return
 }
 showToast(`💬 ${msg.sender_name}: ${msg.content||'📎 медиа'}`)}
 function onTypingIndicator(uid,cid){if(window.currentChatId!==cid||uid===window.currentUser?.id)return;const el=document.getElementById('typing-indicator');if(el){el.textContent='печатает...';clearTimeout(typingTimers[uid]);typingTimers[uid]=setTimeout(()=>{el.textContent=''},3000)}}
@@ -37,6 +41,16 @@ function onReactionUpdate(d){if(window.currentChatId===d.chat_id)updateMessageRe
 function onMessageDeleted(mid,cid){if(window.currentChatId!==cid)return;const el=document.querySelector(`[data-message-id="${mid}"]`);if(el){el.style.opacity='0';el.style.transform='scale(0.8)';setTimeout(()=>el.remove(),200)}}
 function onMessageEdited(mid,cid,content){if(window.currentChatId!==cid)return;const el=document.querySelector(`[data-message-id="${mid}"]`);if(el){const text=el.querySelector('.msg-text');if(text)text.textContent=content;const meta=el.querySelector('.message-meta');if(meta&&!meta.querySelector('.message-edited')){const e=document.createElement('span');e.className='message-edited';e.textContent='изм.';meta.prepend(e)}}}
 function onUserOnlineStatus(uid,online){document.querySelectorAll('.chat-item').forEach(el=>{if(el.dataset.otherUserId===String(uid)){const dot=el.querySelector('.online-indicator');if(dot)dot.style.display=online?'block':'none'}});if(window.currentOtherUserId===uid){const dot=document.getElementById('chat-online-dot');const st=document.getElementById('chat-status');if(dot)dot.style.display=online?'block':'none';if(st)st.textContent=online?'в сети':'был(а) недавно'}}
+function onUnreadUpdate(d){
+if(d.chat_id){
+    const item=document.querySelector(`[data-chat-id="${d.chat_id}"]`)
+    if(item){
+        let badge=item.querySelector('.unread-badge')
+        if(d.unread_count>0){
+            if(!badge){badge=document.createElement('span');badge.className='unread-badge';item.appendChild(badge)}
+            badge.textContent=d.unread_count
+        }else if(badge){badge.remove()}
+    }
+}}
 function sendTypingIndicator(cid,mids){if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'typing',chat_id:cid,member_ids:mids}))}
 function disconnectWebSocket(){if(ws){clearInterval(wsReconnectTimer);ws.close();ws=null}}
-

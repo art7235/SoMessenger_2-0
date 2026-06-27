@@ -29,6 +29,38 @@ function addGroupMember(id,name){if(groupMembers.find(m=>m.id===id))return;group
 async function createGroup(){const name=document.getElementById('group-name').value.trim();if(!name)return showToast('Введите название');if(!groupMembers.length)return showToast('Добавьте участников');try{const data=await api.createGroupChat(name,groupMembers.map(m=>m.id));closeModal();await loadChats();const chat=chatsList.find(c=>c.id===data.chat_id);if(chat)openChat(chat);showToast('Группа создана!')}catch(e){showToast(e.message)}}
 function openDonate(){hideMenu();window.open('https://dalink.to/somessenger','_blank')}
 function logout(){disconnectWebSocket();api.clearToken();window.currentUser=null;document.getElementById('main-screen').classList.remove('active');document.getElementById('auth-screen').classList.add('active');showLogin();document.getElementById('chats-list').innerHTML='';chatsList=[]}
+
+// ===== Chat Search =====
+let chatSearchTimeout=null
+function toggleChatSearch(){
+const bar=document.getElementById('chat-search-bar')
+bar.style.display=bar.style.display==='none'?'block':'none'
+if(bar.style.display==='block')document.getElementById('chat-search-input').focus()
+else{document.getElementById('chat-search-input').value='';highlightChatSearchResults('')}
+}
+function debouncedChatSearch(q){clearTimeout(chatSearchTimeout);chatSearchTimeout=setTimeout(()=>searchInChat(q),300)}
+async function searchInChat(q){
+if(!window.currentChatId)return
+highlightChatSearchResults(q)
+if(q.length<2)return
+try{
+const results=await api.searchMessages(window.currentChatId,q)
+// Scroll to first match
+if(results&&results.length>0){
+  const firstId=results[0].id
+  const el=document.querySelector(`[data-message-id="${firstId}"]`)
+  if(el)el.scrollIntoView({behavior:'smooth',block:'center'})
+  highlightChatSearchResults(q)
+}
+}catch(e){console.error('Chat search error:',e)}
+}
+function highlightChatSearchResults(q){
+document.querySelectorAll('.msg-search-highlight').forEach(el=>{el.classList.remove('msg-search-highlight')})
+if(!q||q.length<2)return
+document.querySelectorAll('.msg-text').forEach(el=>{
+  if(el.textContent.toLowerCase().includes(q.toLowerCase()))el.classList.add('msg-search-highlight')
+})
+}
 function escapeHtml(str){if(!str)return'';return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
 function getInitials(name){if(!name)return'?';return name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2)}
 function formatTime(isoString){if(!isoString)return'';const d=new Date(isoString),n=new Date();if(d.toDateString()===n.toDateString())return d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});const y=new Date(n);y.setDate(y.getDate()-1);if(d.toDateString()===y.toDateString())return'вчера '+d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});return d.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit',year:'2-digit'})}

@@ -25,6 +25,7 @@
 <input type="password" id="login-password" placeholder="Пароль" class="auth-input">
 <button id="login-btn" class="auth-btn primary">Войти</button>
 <p class="auth-switch">Нет аккаунта? <span onclick="showRegister()">Зарегистрироваться</span></p>
+<p class="auth-switch" style="margin-top:4px"><span onclick="showPasswordReset()">Забыли пароль?</span></p>
 </div>
 <div id="register-form" class="auth-form">
 <h2>Регистрация</h2>
@@ -74,6 +75,7 @@
 <div id="chats-list" class="chats-list"></div>
 <div id="sidebar-menu" class="sidebar-menu" style="display:none">
 <div class="menu-item" onclick="showProfile()">👤 Профиль</div>
+<div class="menu-item" onclick="showChangePassword()">🔑 Сменить пароль</div>
 <div class="menu-item" onclick="showGroupModal()">👥 Создать группу</div>
 <div class="menu-item" onclick="showCreateChannel()">📢 Создать канал</div>
 <div class="menu-item" onclick="showStickers()">😊 Стикеры</div>
@@ -108,8 +110,13 @@
 <div id="chat-header-actions" class="chat-header-actions">
 <button id="call-btn" class="icon-btn" onclick="startVoiceCall()" title="Звонок">📞</button>
 <button id="vcall-btn" class="icon-btn" onclick="startVideoCall()" title="Видеозвонок">📹</button>
+<button id="chat-search-btn" class="icon-btn" onclick="toggleChatSearch()" title="Поиск">🔍</button>
 <button id="channel-menu-btn" class="icon-btn" onclick="showChannelMenu()" title="Ещё" style="display:none">⋮</button>
 </div>
+</div>
+<!-- Chat search bar -->
+<div id="chat-search-bar" style="display:none;padding:8px 16px;background:var(--bg-secondary);border-bottom:1px solid var(--border)">
+<input type="text" id="chat-search-input" placeholder="Поиск в чате..." class="search-input" style="width:100%" oninput="debouncedChatSearch(this.value)">
 </div>
 
 <div id="messages-container" class="messages-container">
@@ -235,6 +242,46 @@ onkeydown="handleInputKeydown(event)" oninput="handleInputChange()"></textarea>
 <p id="info-extra" style="color:var(--text-muted);font-size:13px;margin-top:8px"></p>
 </div>
 </div>
+<div id="modal-forward" class="modal" style="display:none">
+<div class="modal-header"><h3>↪️ Переслать в...</h3><button onclick="closeModal()">✕</button></div>
+<div class="modal-body" style="padding:0;max-height:400px;overflow-y:auto">
+<div id="forward-chats-list"></div>
+</div>
+</div>
+<div id="modal-password" class="modal" style="display:none">
+<div class="modal-header"><h3>🔑 Сменить пароль</h3><button onclick="closeModal()">✕</button></div>
+<div class="modal-body">
+<input type="password" id="pw-old" placeholder="Текущий пароль" class="auth-input">
+<input type="password" id="pw-new" placeholder="Новый пароль (мин. 6)" class="auth-input">
+<input type="password" id="pw-confirm" placeholder="Подтвердите новый пароль" class="auth-input">
+<div id="pw-error" style="color:var(--danger);font-size:13px;min-height:18px"></div>
+<button onclick="changePassword()" class="auth-btn primary">Сменить пароль</button>
+<p class="auth-switch" style="margin-top:8px"><span onclick="showPasswordReset()">Забыли пароль?</span></p>
+</div>
+</div>
+<div id="modal-reset" class="modal" style="display:none">
+<div class="modal-header"><h3>🔓 Восстановление пароля</h3><button onclick="closeModal()">✕</button></div>
+<div class="modal-body">
+<div id="reset-step-1">
+<input type="email" id="reset-email-input" placeholder="Email" class="auth-input">
+<button onclick="requestResetCode()" class="auth-btn primary">Отправить код</button>
+</div>
+<div id="reset-step-2" style="display:none">
+<p style="color:var(--text-secondary);font-size:14px;margin-bottom:12px">Введите код из письма и новый пароль</p>
+<div id="reset-code-inputs" class="code-inputs">
+<input type="text" maxlength="1" class="code-input" inputmode="numeric">
+<input type="text" maxlength="1" class="code-input" inputmode="numeric">
+<input type="text" maxlength="1" class="code-input" inputmode="numeric">
+<input type="text" maxlength="1" class="code-input" inputmode="numeric">
+<input type="text" maxlength="1" class="code-input" inputmode="numeric">
+<input type="text" maxlength="1" class="code-input" inputmode="numeric">
+</div>
+<input type="password" id="reset-new-password" placeholder="Новый пароль (мин. 6)" class="auth-input" style="margin-top:12px">
+<div id="reset-error" style="color:var(--danger);font-size:13px;min-height:18px"></div>
+<button onclick="verifyResetCode()" class="auth-btn primary">Сбросить пароль</button>
+</div>
+</div>
+</div>
 </div>
 
 <!-- FLOATING -->
@@ -296,5 +343,5 @@ onkeydown="handleInputKeydown(event)" oninput="handleInputChange()"></textarea>
 <script src="/static/js/modules/ui.js"></script>
 <script src="/static/js/modules/calls.js"></script>
 <script src="/static/js/app.js"></script>
-<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a0ccdf424d835010',t:'MTc4MTY0NDk2OQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a11ca3067b0ca031',t:'MTc4MjQ4MTM2Mg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>

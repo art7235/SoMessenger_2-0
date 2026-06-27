@@ -20,6 +20,7 @@ class Message(Base):
     file_size = Column(Integer, nullable=True)
     duration = Column(Integer, nullable=True)  # seconds for voice/audio/video messages
     reply_to_id = Column(Integer, ForeignKey("messages.id"), nullable=True)
+    forward_from_id = Column(Integer, ForeignKey("messages.id"), nullable=True)
     # For the common channel discussion chat: root messages that mirror channel posts
     # have channel_post_id set. User comments are normal messages replying to those roots.
     channel_post_id = Column(Integer, ForeignKey("channel_posts.id"), nullable=True)
@@ -30,4 +31,5 @@ class Message(Base):
     sender = relationship("User", back_populates="sent_messages", foreign_keys=[sender_id])
     chat = relationship("Chat", back_populates="messages")
     reply_to = relationship("Message", remote_side=[id])
+    forward_from = relationship("Message", remote_side=[id], foreign_keys=[forward_from_id])
     reactions = relationship("Reaction", back_populates="message")

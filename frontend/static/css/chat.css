@@ -25,6 +25,7 @@
 .message-wrapper .sticker-message,.message-wrapper .message-image,.message-wrapper .message-video{margin:0;display:block}
 .msg-text{white-space:pre-wrap;word-break:break-word}
 .msg-text a{color:#a78bfa;text-decoration:underline;word-break:break-all}
+.msg-search-highlight{background:rgba(176,110,243,.3);border-radius:4px;padding:0 2px}
 .message-meta{display:flex;align-items:center;gap:4px;margin-top:2px;padding:0 4px;font-size:11px;color:var(--text-muted)}
 .message-edited{font-style:italic}
 .message-reply-bubble{display:flex;background:rgba(0,0,0,.15);border-radius:10px;margin-bottom:6px;cursor:pointer;overflow:hidden}

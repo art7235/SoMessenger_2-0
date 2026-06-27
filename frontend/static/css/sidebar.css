@@ -20,6 +20,13 @@
 .chat-item-name{font-size:15px;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chat-item-time{font-size:11px;color:var(--text-muted);flex-shrink:0}
 .chat-item-preview{font-size:13px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.unread-badge{background:var(--accent);color:#fff;font-size:11px;font-weight:700;min-width:20px;height:20px;border-radius:10px;display:flex;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0;margin-left:8px}
+.forward-chat-item{display:flex;align-items:center;gap:12px;padding:12px 18px;cursor:pointer;transition:background .15s;color:var(--text-primary)}
+.forward-chat-item:hover{background:var(--bg-tertiary)}
+.forward-chat-avatar{width:36px;height:36px;border-radius:50%;object-fit:cover}
+.forward-chat-avatar.placeholder{background:linear-gradient(135deg,var(--accent),var(--accent-hover));display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;color:white;flex-shrink:0}
+.forward-chat-name{font-size:14px;font-weight:500}
+.forwarded-label{font-size:11px;color:var(--text-muted);font-style:italic;margin-bottom:4px;padding:0 4px}
 .sidebar-menu{position:absolute;top:60px;right:12px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;z-index:100;box-shadow:0 8px 30px var(--shadow);min-width:220px;overflow:hidden}
 .menu-item{padding:13px 18px;cursor:pointer;font-size:14px;color:var(--text-primary);transition:background .15s;display:flex;align-items:center;gap:10px}
 .menu-item:hover{background:var(--bg-tertiary)}

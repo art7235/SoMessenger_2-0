@@ -9,9 +9,10 @@ from typing import Optional, List
 class MessageService:
     @staticmethod
     async def create_message(db, chat_id, sender_id, content=None, msg_type="text",
-            file_url=None, file_name=None, file_size=None, reply_to_id=None, duration=None):
-        msg = Message(chat_id=chat_id, sender_id=sender_id, content=encrypt_text(content), message_type=msg_type,
+            file_url=None, file_name=None, file_size=None, reply_to_id=None, forward_from_id=None, duration=None):
+        msg = Message(chat_id=chat_id, sender_id=sender_id, content=encrypt_text(content) if content else None, message_type=msg_type,
             file_url=file_url, file_name=file_name, file_size=file_size, reply_to_id=reply_to_id,
+            forward_from_id=forward_from_id,
             duration=int(duration) if duration is not None else None)
         db.add(msg); await db.commit(); await db.refresh(msg)
         r = await db.execute(select(Message).where(Message.id==msg.id)

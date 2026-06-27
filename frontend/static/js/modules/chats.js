@@ -36,7 +36,9 @@ else if(t==='video')preview='🎬 Видео'
 else if(t==='file')preview='📁 Файл'
 else preview=chat.last_message.content||''}
 const onlineHtml=chat.other_user_online&&!chat.is_group&&!chat._isChannel?'<div class="online-indicator"></div>':''
-div.innerHTML=`<div class="chat-item-avatar-wrap">${chat.avatar_url?`<img src="${chat.avatar_url}" class="chat-item-img">`:`<div class="chat-avatar-placeholder">${getInitials(name)}</div>`}${onlineHtml}</div><div class="chat-item-info"><div class="chat-item-header"><span class="chat-item-name">${escapeHtml(name)}</span><span class="chat-item-time">${chat.last_message?formatTime(chat.last_message.created_at):''}</span></div><div class="chat-item-preview">${escapeHtml(preview)}</div></div>`
+// Unread badge
+const unreadHtml=chat.unread_count>0?`<span class="unread-badge">${chat.unread_count}</span>`:''
+div.innerHTML=`<div class="chat-item-avatar-wrap">${chat.avatar_url?`<img src="${chat.avatar_url}" class="chat-item-img">`:`<div class="chat-avatar-placeholder">${getInitials(name)}</div>`}${onlineHtml}</div><div class="chat-item-info"><div class="chat-item-header"><span class="chat-item-name">${escapeHtml(name)}</span><span class="chat-item-time">${chat.last_message?formatTime(chat.last_message.created_at):''}</span></div><div class="chat-item-preview">${escapeHtml(preview)}</div></div>${unreadHtml}`
 div.addEventListener('click',()=>{
 if(chat._isChannel)openChannel(chat.id)
 else if(chat.is_comments)openCommentsChat(chat)
@@ -53,7 +55,11 @@ document.querySelectorAll('.chat-item').forEach(el=>el.classList.remove('active'
 const item=document.querySelector(`[data-chat-id="${chat.id}"][data-is-channel="0"]`)
 if(item)item.classList.add('active')
 window.currentMessages=[];document.getElementById('messages-list').innerHTML=''
-await loadMessages(chat.id)}
+lastReadChatId=null
+await loadMessages(chat.id)
+// Mark as read on open
+clearUnreadBadge(chat.id)
+markChatReadIfNeeded()}
 
 async function openCommentsChat(chat){
 window.currentChatId=chat.id;window.currentOtherUserId=null;window.currentCommentsPostId=chat.comment_post_id||chat._commentPostId||chat.post_id||null;window.currentCommentsRootId=chat.root_message_id||chat._commentRootId||null
@@ -71,6 +77,7 @@ document.querySelectorAll('.chat-item').forEach(el=>el.classList.remove('active'
 const item=document.querySelector(`[data-chat-id="${chat.id}"]`)
 if(item)item.classList.add('active')
 window.currentMessages=[];document.getElementById('messages-list').innerHTML=''
+lastReadChatId=null
 await loadMessages(chat.id,true,window.currentCommentsPostId)}
 
 function showChatUI(name,avatar,isGroup,isOnline,isDiscussion=false){
@@ -87,6 +94,7 @@ document.getElementById('channel-menu-btn').style.display='none'}
 
 function closeChat(){
 window.currentChatId=null;window.currentOtherUserId=null;window.currentCommentsPostId=null;window.currentCommentsRootId=null
+lastReadChatId=null
 document.getElementById('active-chat').style.display='none';document.getElementById('welcome-screen').style.display='flex'
 if(window.innerWidth<=768)document.getElementById('sidebar').classList.remove('hidden')}
 

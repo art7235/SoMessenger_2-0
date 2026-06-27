@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from app.core.database import get_db
 from app.models.user import User
-from app.models.chat import Chat
+from app.models.chat import Chat, ChatMember
 from app.models.message import Message
 from app.models.channel import Channel, ChannelPost, ChannelSubscriber
 from app.services.chat_service import ChatService
@@ -34,7 +34,7 @@ def _fmt(msg):
         "file_url":msg.file_url,"file_name":msg.file_name,"file_size":msg.file_size,
         "duration":msg.duration,
         "channel_post_id":msg.channel_post_id,
-        "reply_to":rd,"is_edited":msg.is_edited,"reactions":rg,
+        "reply_to":rd,"forward_from_id":msg.forward_from_id,"is_edited":msg.is_edited,"reactions":rg,
         "created_at":msg.created_at.isoformat()+"Z"}
 
 @router.get("/")
@@ -85,7 +85,7 @@ async def get_my_chats(u: User = Depends(get_current_user), db: AsyncSession = D
             "is_comments":False,"is_discussion":is_discussion,"channel_id":channel_id,
             "post_id":chat.post_id,
             "last_message":lm,"other_user_id":ou.id if ou else None,
-            "other_user_online":ou.is_online if ou else None,"created_at":chat.created_at.isoformat()+"Z"})
+            "other_user_online":ou.is_online if ou else None,"created_at":chat.created_at.isoformat()+"Z", "unread_count": getattr(chat, "unread_count", 0)})
     return result
 
 @router.get("/{chat_id}/messages")
@@ -108,7 +108,7 @@ async def send_message(chat_id: int, data: dict,
     if not await ChatService.is_chat_member(db, chat_id, u.id): raise HTTPException(403,"Нет доступа")
     fu = data.get("content") if data.get("message_type")=="sticker" else None
     msg = await MessageService.create_message(db, chat_id, u.id, content=data.get("content"),
-        msg_type=data.get("message_type","text"), reply_to_id=data.get("reply_to_id"), file_url=fu)
+        msg_type=data.get("message_type","text"), reply_to_id=data.get("reply_to_id"), forward_from_id=data.get("forward_from_id"), file_url=fu)
     mids = await ChatService.get_chat_member_ids(db, chat_id)
     fm = _fmt(msg)
     await manager.broadcast_to_chat_members(mids, {"type":"new_message","chat_id":chat_id,"message":fm})
@@ -132,7 +132,7 @@ async def upload_file(chat_id: int, file: UploadFile=File(...), reply_to_id: Opt
     async with aiofiles.open(fp,"wb") as f: await f.write(content)
     fu = f"/uploads/{fl}/{fn}"
     msg = await MessageService.create_message(db, chat_id, u.id, msg_type=mt, file_url=fu,
-        file_name=file.filename, file_size=len(content), reply_to_id=reply_to_id,
+        file_name=file.filename, file_size=len(content), reply_to_id=reply_to_id, forward_from_id=data.get("forward_from_id"),
         duration=duration if mt in ("voice","audio","video") else None)
     mids = await ChatService.get_chat_member_ids(db, chat_id)
     fm = _fmt(msg)
@@ -205,3 +205,40 @@ async def notify_call(data: dict, u: User = Depends(get_current_user), db: Async
     })
     return {"status": "ok"}
 
+
+@router.post("/{chat_id}/read")
+async def mark_chat_as_read(chat_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if not await ChatService.is_chat_member(db, chat_id, u.id):
+        raise HTTPException(403, "Нет доступа")
+    # Get the latest message id in the chat
+    latest = await db.execute(
+        select(Message.id).where(Message.chat_id == chat_id, Message.is_deleted == False)
+        .order_by(Message.id.desc()).limit(1)
+    )
+    last_id = latest.scalar_one_or_none() or 0
+    member = (await db.execute(
+        select(ChatMember).where(ChatMember.chat_id == chat_id, ChatMember.user_id == u.id)
+    )).scalar_one_or_none()
+    if member:
+        member.last_read_message_id = last_id
+        await db.commit()
+    return {"status": "ok", "last_read_message_id": last_id}
+
+@router.get("/{chat_id}/search")
+async def search_in_chat(chat_id: int, q: str, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if not await ChatService.is_chat_member(db, chat_id, u.id):
+        raise HTTPException(403, "Нет доступа")
+    if not q or len(q) < 2:
+        return []
+    # Search all messages (decrypt on the fly)
+    msgs = await MessageService.get_chat_messages(db, chat_id, limit=200, offset=0)
+    results = []
+    q_lower = q.lower()
+    for m in msgs:
+        try:
+            plain = decrypt_text(m.content) or ""
+            if q_lower in plain.lower():
+                results.append(_fmt(m))
+        except:
+            continue
+    return results

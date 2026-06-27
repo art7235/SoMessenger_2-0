@@ -1,5 +1,28 @@
 let replyToMessage=null,editingMessage=null,currentVoicePlayers={},isLoadingMessages=false,hasMoreMessages=true,messagesOffset=0
 let messagesLoadSeq=0,pendingScrollTimer=null,userTouchedMessagesAt=0
+let forwardSourceMsg=null
+
+// ===== Swipe-to-Reply =====
+let swipeState=null
+function initSwipeOnMessage(wrapper,msg){
+  let startX=0,startY=0,startTime=0,dx=0,moved=false,tracking=false
+  wrapper.addEventListener('touchstart',e=>{
+    const t=e.touches[0];startX=t.clientX;startY=t.clientY;startTime=Date.now();dx=0;moved=false;tracking=true
+    wrapper.style.transition='none'
+  },{passive:true})
+  wrapper.addEventListener('touchmove',e=>{
+    if(!tracking)return
+    const t=e.touches[0];dx=t.clientX-startX;const dy=t.clientY-startY
+    if(Math.abs(dy)>Math.abs(dx)&&!moved){tracking=false;wrapper.style.transform='';return}
+    if(dx>0){moved=true;const clamped=Math.min(dx,80);wrapper.style.transform=`translateX(${clamped}px)`}
+  },{passive:true})
+  wrapper.addEventListener('touchend',()=>{
+    if(!tracking)return;tracking=false
+    wrapper.style.transition='transform .25s ease'
+    if(dx>60&&moved){startReply(msg.id)}
+    wrapper.style.transform=''
+  })
+}
 
 async function loadMessages(chatId,reset=true,commentPostId=null){
 const activeCommentPostId = commentPostId || window.currentCommentsPostId || null
@@ -10,8 +33,6 @@ if(isLoadingMessages||!hasMoreMessages)return;isLoadingMessages=true
 try{
 const offsetAtStart=messagesOffset
 const msgs=await api.getMessages(chatId,50,offsetAtStart,activeCommentPostId)
-// Ignore stale responses. This prevents old chat media from flashing in a newly
-// opened chat while slow uploads/network requests are still finishing.
 if(seq!==messagesLoadSeq || window.currentChatId!==chatId || (activeCommentPostId||null)!==(window.currentCommentsPostId||null))return
 if(msgs.length<50)hasMoreMessages=false
 if(reset){window.currentMessages=msgs;renderMessages(msgs);scrollToBottom({force:userTouchedMessagesAt===interactionAtStart})}
@@ -27,6 +48,9 @@ wrapper.className=`message-wrapper ${isOwn?'outgoing':'incoming'}`
 wrapper.dataset.messageId=msg.id
 const noBubbleTypes=['sticker','image','video'];const noBubble=noBubbleTypes.includes(msg.message_type)
 
+// Swipe-to-reply for incoming messages (swipe right)
+if(!isOwn&&!msg._isPost) initSwipeOnMessage(wrapper,msg)
+
 // Sender name for groups/comments
 if(!isOwn&&msg.sender_name&&!msg._isPost){
 const n=document.createElement('div');n.className='message-sender-name';n.textContent=msg.sender_name;wrapper.appendChild(n)}
@@ -39,7 +63,12 @@ html+=`<div class="message-reply-bubble"><div class="reply-bubble-line"></div><d
 }else{
 html+=`<div class="message-reply-bubble"><div class="reply-bubble-line"></div><div class="reply-bubble-content"><span class="reply-bubble-name">${escapeHtml(msg.reply_to.sender_name)}</span><span class="reply-bubble-text">${escapeHtml(msg.reply_to.content||'Медиа')}</span></div></div>`}}
 
-// Content - no bubble for stickers/images/video
+// Forwarded label
+if(msg.forwarded_from){
+html+=`<div class="forwarded-label">↪ Переслано от ${escapeHtml(msg.forwarded_from)}</div>`
+}
+
+// Content
 if(msg.message_type==='sticker'){
 html+=`<img src="${msg.file_url}" class="sticker-message" alt="sticker">`
 }else if(msg.message_type==='image'){
@@ -57,7 +86,7 @@ html+=`<div class="message-file" onclick="downloadFile('${msg.file_url}')"><div 
 }else if(msg.content){
 html+=`<div class="msg-text">${formatMessageText(msg.content)}</div>`}
 
-// Post reactions for channel posts: always available, even when no one reacted yet.
+// Post reactions
 if(msg._isPost){
 const reactions=msg.reactions||{}
 html+=`<div class="post-reaction-menu">${['👍','❤️','😂','😮','😢','🔥','🎉'].map(r=>`<button title="${r}" onclick="event.stopPropagation();togglePostReaction(${msg.id},'${r}')">${r}</button>`).join('')}</div>`
@@ -65,42 +94,36 @@ if(Object.keys(reactions).length>0){
 html+=`<div class="post-reactions">${Object.entries(reactions).map(([em,c])=>`<span class="post-reaction-badge" onclick="event.stopPropagation();togglePostReaction(${msg.id},'${em}')">${em} ${c}</span>`).join('')}</div>`
 }
 }
-// Post footer
 if(msg._isPost){
 html+=`<div class="post-meta-footer"><span class="post-views">👁 ${msg.views_count||0}</span><button class="post-comments-btn" onclick="event.stopPropagation();openCommentsForPost(${msg.id})">💬 ${msg.comments_count||0}</button></div>`
-// Wrap post in bubble always
 const bubble=document.createElement('div');bubble.className='message-bubble post-bubble';bubble.innerHTML=html;wrapper.appendChild(bubble)
 const positionReactions=()=>positionPostReactionMenu(bubble)
 bubble.addEventListener('mouseenter',positionReactions)
 bubble.addEventListener('mousemove',positionReactions)
 bubble.addEventListener('click',(e)=>{if(e.target.closest('button')||e.target.closest('.post-reaction-badge')||e.target.closest('a'))return;document.querySelectorAll('.post-bubble.show-reactions').forEach(x=>{if(x!==bubble)x.classList.remove('show-reactions')});positionPostReactionMenu(bubble);bubble.classList.toggle('show-reactions')})
 }else{
-// Regular message - wrap in bubble unless it's a media type
 if(!noBubble){const bubble=document.createElement('div');bubble.className='message-bubble';bubble.innerHTML=html;wrapper.appendChild(bubble)}
 else{wrapper.innerHTML=html}
-// Add hover reaction bar for desktop (images, stickers)
 if(noBubble&&msg.message_type!=='video'){
 const hb=document.createElement('div');hb.className='hover-reaction-bar'
-// Position: bottom-center for images, bottom for stickers
 hb.style.bottom='-30px';hb.style.left='50%';hb.style.transform='translateX(-50%)'
 hb.innerHTML=['👍','❤️','😂','😮','😢','🔥'].map(r=>`<button onclick="toggleReaction(${msg.chat_id},${msg.id},'${r}');event.stopPropagation()">${r}</button>`).join('')
 wrapper.appendChild(hb)}}
 
-// Reactions badge for non-post messages
+// Reactions badge for non-post
 if(!msg._isPost&&msg.reactions&&Object.keys(msg.reactions).length>0){
 const rd=document.createElement('div');rd.className='message-reactions'
 Object.entries(msg.reactions).forEach(([emoji,count])=>{
 const badge=document.createElement('span');badge.className='reaction-badge'
 badge.textContent=`${emoji} ${count}`
-badge.onclick=(e)=>{e.stopPropagation();toggleReaction(msg.chat_id,msg.id,emoji)};rd.appendChild(badge)})
-wrapper.appendChild(rd)}
+badge.onclick=(e)=>{e.stopPropagation();toggleReaction(msg.chat_id,msg.id,emoji)};rd.appendChild(badge)});wrapper.appendChild(rd)}
 
 // Meta
 const meta=document.createElement('div');meta.className='message-meta'
 if(msg.is_edited){const e=document.createElement('span');e.className='message-edited';e.textContent='изм.';meta.appendChild(e)}
 meta.innerHTML+=formatTime(msg.created_at);wrapper.appendChild(meta)
 
-// Context menu (right click / double click)
+// Context menu
 if(!msg._isPost){
 const bubble=wrapper.querySelector('.message-bubble')||wrapper
 bubble.oncontextmenu=(e)=>{e.preventDefault();showMessageActions(e,msg)}
@@ -124,11 +147,9 @@ audio.play().catch(()=>{currentVoicePlayers[vid]=null;btn.textContent='▶';if(d
 
 function downloadFile(url){if(url)window.open(url,'_blank')}
 
-// sendMessage - handles channel posts and regular messages
 async function sendMessage(){
 const input=document.getElementById('message-input');const content=input.value.trim()
 if(!content)return
-// If we're in channel mode (currentChannelId set), create a post
 if(typeof currentChannelId!=='undefined'&&currentChannelId){
 try{await api.createPost(currentChannelId,content);input.value='';loadChannelPosts(currentChannelId)}catch(e){showToast('Ошибка: '+e.message)};return}
 if(!window.currentChatId)return
@@ -136,7 +157,6 @@ if(editingMessage){
 try{await api.editMessage(window.currentChatId,editingMessage.id,content);input.value='';cancelEdit();loadMessages(window.currentChatId,true)}catch(e){showToast('Ошибка: '+e.message)};return}
 try{const replyId=window.currentCommentsRootId||replyToMessage?.id||null;await api.sendMessage(window.currentChatId,content,'text',replyId);input.value='';cancelReply();loadMessages(window.currentChatId,true,window.currentCommentsPostId||null)}catch(e){showToast('Ошибка: '+e.message)}}
 
-// uploadFile - handles channel and chat uploads
 async function uploadFile(input){
 const originalFile=input.files[0];if(!originalFile)return
 const targetChannelId=(typeof currentChannelId!=='undefined'&&currentChannelId)?currentChannelId:null
@@ -174,8 +194,7 @@ const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',0.82))
 if(!blob||blob.size>=file.size)return file
 const name=(file.name||'photo').replace(/\.[^.]+$/,'.jpg')
 return new File([blob],name,{type:'image/jpeg',lastModified:Date.now()})
-}catch(e){return file}
-}
+}catch(e){return file}}
 
 async function toggleReaction(cid,mid,em){try{await api.reactToMessage(cid,mid,em)}catch(e){}}
 
@@ -199,6 +218,7 @@ const menu=document.getElementById('message-actions-menu')
 let html=''
 if(msg.sender_id===currentUser.id){if(msg.message_type==='text')html+=`<button class="delete-menu-btn" onclick="startEditMessage(${msg.id})">✏️ Редактировать</button>`;html+=`<button class="delete-menu-btn danger" onclick="deleteMessage(${msg.chat_id},${msg.id})">🗑 Удалить</button>`}
 html+=`<button class="delete-menu-btn" onclick="startReply(${msg.id})">↩️ Ответить</button>`
+html+=`<button class="delete-menu-btn" onclick="startForward(${msg.id})">↪️ Переслать</button>`
 menu.innerHTML=html;menu.style.left=Math.min(event.clientX,window.innerWidth-200)+'px';menu.style.top=Math.min(event.clientY,window.innerHeight-150)+'px';menu.style.display='block'}
 document.addEventListener('click',(e)=>{const m=document.getElementById('message-actions-menu');const p=document.getElementById('reaction-picker');if(m&&!m.contains(e.target))m.style.display='none';if(p&&!p.contains(e.target))p.style.display='none'})
 
@@ -214,6 +234,51 @@ else{rt.innerHTML=escapeHtml(msg.content||(msg.message_type==='sticker'?'😊 С
 document.getElementById('message-input').focus()}
 function cancelReply(){replyToMessage=null;document.getElementById('reply-preview').style.display='none';document.getElementById('reply-text').innerHTML=''}
 
+// ===== FORWARD =====
+function startForward(mid){
+document.getElementById('message-actions-menu').style.display='none'
+const msg=window.currentMessages?.find(m=>m.id===mid);if(!msg)return
+forwardSourceMsg=msg
+showModal('modal-forward')
+loadForwardChats()
+}
+
+async function loadForwardChats(){
+const container=document.getElementById('forward-chats-list')
+container.innerHTML='<div style="padding:20px;text-align:center;color:var(--text-muted)"><div class="spinner" style="margin:0 auto 10px"></div>Загрузка...</div>'
+try{
+const chats=await api.getChats()
+const channels=await loadChannelsList().catch(()=>[])
+container.innerHTML=''
+chats.forEach(ch=>{
+const el=document.createElement('div');el.className='forward-chat-item'
+el.innerHTML=`${ch.avatar_url?`<img src="${ch.avatar_url}" class="forward-chat-avatar">`:`<div class="forward-chat-avatar placeholder">${getInitials(ch.name)}</div>`}<div class="forward-chat-name">${escapeHtml(ch.name)}</div>`
+el.onclick=()=>doForward(ch.id)
+container.appendChild(el)
+})
+channels.forEach(ch=>{
+const el=document.createElement('div');el.className='forward-chat-item'
+el.innerHTML=`<div class="forward-chat-avatar placeholder">📢</div><div class="forward-chat-name">${escapeHtml(ch.name)}</div>`
+el.onclick=()=>doForward(ch.id)
+container.appendChild(el)
+})
+}catch(e){container.innerHTML='<div style="padding:20px;text-align:center;color:var(--danger)">Ошибка загрузки</div>'}
+}
+
+async function doForward(targetChatId){
+closeModal()
+if(!forwardSourceMsg)return
+showToast('Пересылка...')
+try{
+const content=forwardSourceMsg.content||''
+const msgType=forwardSourceMsg.message_type||'text'
+const replyId=null
+await api.sendMessage(targetChatId,content,msgType,replyId)
+showToast('Переслано ✓')
+}catch(e){showToast('Ошибка: '+e.message)}
+forwardSourceMsg=null
+}
+
 function startEditMessage(mid){document.getElementById('message-actions-menu').style.display='none';const msg=window.currentMessages?.find(m=>m.id===mid);if(!msg)return;editingMessage=msg;document.getElementById('edit-preview').style.display='flex';document.getElementById('edit-text').textContent=msg.content;document.getElementById('message-input').value=msg.content;document.getElementById('message-input').focus();handleInputChange()}
 function cancelEdit(){editingMessage=null;document.getElementById('edit-preview').style.display='none';document.getElementById('message-input').value='';handleInputChange()}
 function handleInputKeydown(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}}
@@ -225,26 +290,42 @@ const force=!!opts.force
 if(pendingScrollTimer)clearTimeout(pendingScrollTimer)
 pendingScrollTimer=setTimeout(()=>{
     const sc=document.getElementById('messages-container');if(!sc)return
-    // Do not fight the first manual wheel/swipe after opening a chat.
     if(!force && Date.now()-userTouchedMessagesAt<900)return
     sc.scrollTop=sc.scrollHeight
 },30)}
-function appendMessage(msg){document.getElementById('messages-list').appendChild(createMessageElement(msg,msg.sender_id===currentUser.id))}
+function appendMessage(msg){document.getElementById('messages-list').appendChild(createMessageElement(msg,msg.sender_id===currentUser.id));markChatReadIfNeeded()}
 function openImageViewer(url){document.getElementById('image-viewer-img').src=url;document.getElementById('image-viewer').style.display='flex'}
 function closeImageViewer(){document.getElementById('image-viewer').style.display='none'}
 const messagesScroller=document.getElementById('messages-container')
 messagesScroller?.addEventListener('wheel',markMessagesUserInteraction,{passive:true})
 messagesScroller?.addEventListener('touchstart',markMessagesUserInteraction,{passive:true})
 messagesScroller?.addEventListener('pointerdown',markMessagesUserInteraction,{passive:true})
-messagesScroller?.addEventListener('scroll',function(){if(this.scrollTop<50&&hasMoreMessages&&!isLoadingMessages&&window.currentChatId)loadMessages(window.currentChatId,false)})
+messagesScroller?.addEventListener('scroll',function(){if(this.scrollTop<50&&hasMoreMessages&&!isLoadingMessages&&window.currentChatId)loadMessages(window.currentChatId,false);markChatReadIfNeeded()})
+
+// ===== UNREAD: mark as read =====
+let lastReadChatId=null,readMarkTimer=null
+function markChatReadIfNeeded(){
+if(!window.currentChatId)return
+if(readMarkTimer)clearTimeout(readMarkTimer)
+readMarkTimer=setTimeout(async()=>{
+  if(window.currentChatId&&window.currentChatId!==lastReadChatId){
+    try{await api.markChatRead(window.currentChatId);lastReadChatId=window.currentChatId;clearUnreadBadge(window.currentChatId)}catch(e){}
+  }else if(window.currentChatId){
+    try{await api.markChatRead(window.currentChatId);clearUnreadBadge(window.currentChatId)}catch(e){}
+  }
+},1500)
+}
+
+function clearUnreadBadge(chatId){
+const item=document.querySelector(`[data-chat-id="${chatId}"]`)
+if(item){const badge=item.querySelector('.unread-badge');if(badge)badge.remove()}
+}
+
 function formatMessageText(t){if(!t)return'';return escapeHtml(t).replace(/(https?:\/\/[^\s]+)/g,'<a href="$1" target="_blank" class="msg-link">$1</a>')}
 function formatDuration(seconds){seconds=Number(seconds)||0;const m=Math.floor(seconds/60);const s=Math.floor(seconds%60);return `${m}:${String(s).padStart(2,'0')}`}
 function clamp(n,min,max){return Math.max(min,Math.min(max,n))}
 function positionPostReactionMenu(bubble){
 const menu=bubble?.querySelector('.post-reaction-menu');if(!menu)return
-// Fixed positioning keeps the reaction menu outside the scroll container clipping.
-// Prefer below the post; if the post is near the bottom, clamp to visible viewport
-// instead of moving above the first message or outside the screen.
 const rect=bubble.getBoundingClientRect();const vw=window.innerWidth;const vh=window.innerHeight
 menu.style.visibility='hidden';menu.style.opacity='0';menu.style.pointerEvents='none'
 const mw=menu.offsetWidth||260;const mh=menu.offsetHeight||42
@@ -253,9 +334,6 @@ let top=rect.bottom+8
 if(top+mh>vh-8)top=clamp(rect.bottom-mh-8,8,vh-mh-8)
 menu.style.setProperty('--reaction-left',`${left}px`)
 menu.style.setProperty('--reaction-top',`${top}px`)
-menu.style.visibility=''
-menu.style.opacity=''
-menu.style.pointerEvents=''
-}
+menu.style.visibility='';menu.style.opacity='';menu.style.pointerEvents=''}
 window.addEventListener('resize',()=>document.querySelectorAll('.post-bubble:hover,.post-bubble.show-reactions').forEach(positionPostReactionMenu))
 document.getElementById('messages-container')?.addEventListener('scroll',()=>document.querySelectorAll('.post-bubble:hover,.post-bubble.show-reactions').forEach(positionPostReactionMenu))
