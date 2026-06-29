@@ -5,13 +5,13 @@ let forwardSourceMsg=null,forwardSourcePost=null
 // ===== Swipe-to-Reply =====
 function initSwipeOnMessage(wrapper,msg){
   if(msg._isPost)return
-  let startX=0,startY=0,dx=0,dy=0,tracking=false,decided=false,touchStartedAt=0
+  let startX=0,startY=0,dx=0,dy=0,tracking=false,decided=false
   let icon=wrapper.querySelector('.swipe-reply-icon')
   if(!icon){icon=document.createElement('div');icon.className='swipe-reply-icon left-swipe';icon.textContent='↩';wrapper.appendChild(icon)}
   else icon.classList.add('left-swipe')
   wrapper.addEventListener('touchstart',e=>{
     if(e.touches.length!==1)return
-    const t=e.touches[0];startX=t.clientX;startY=t.clientY;dx=0;dy=0;tracking=true;decided=false;touchStartedAt=Date.now()
+    const t=e.touches[0];startX=t.clientX;startY=t.clientY;dx=0;dy=0;tracking=true;decided=false
     wrapper.style.transition='none';icon.style.transition='none'
   },{passive:true})
   wrapper.addEventListener('touchmove',e=>{
@@ -22,7 +22,7 @@ function initSwipeOnMessage(wrapper,msg){
       decided=true
       if(Math.abs(dy)>Math.abs(dx)*1.15){resetSwipeVisual(wrapper,icon);tracking=false;return}
     }
-    // Telegram-like: swipe right-to-left anywhere on the message row opens reply.
+    // Telegram-like: swipe right-to-left on a message opens reply.
     // Swipe left-to-right is reserved for mobile navigation back to chat list.
     if(dx<0){
       const clamped=Math.max(dx,-86)
@@ -32,19 +32,10 @@ function initSwipeOnMessage(wrapper,msg){
       icon.classList.toggle('active',Math.abs(clamped)>58)
     }
   },{passive:true})
-  wrapper.addEventListener('touchend',e=>{
+  wrapper.addEventListener('touchend',()=>{
     if(!tracking)return;tracking=false
     wrapper.style.transition='transform .22s ease';icon.style.transition='opacity .18s, transform .18s'
-    const absX=Math.abs(dx),absY=Math.abs(dy)
-    if(dx<-58){startReply(msg.id);resetSwipeVisual(wrapper,icon);return}
-    // Mobile tap on a regular message opens the same action menu with reactions.
-    // Do not hijack taps on media, links, buttons, or reply preview bubbles.
-    const target=e.changedTouches&&document.elementFromPoint(e.changedTouches[0].clientX,e.changedTouches[0].clientY)
-    const isInteractive=target&&target.closest('button,a,video,.message-image,.message-reply-bubble,.post-reaction-badge,.reaction-badge')
-    if(Date.now()-touchStartedAt<420&&absX<10&&absY<10&&!isInteractive&&window.innerWidth<=768){
-      const r=wrapper.getBoundingClientRect()
-      showMessageActions({clientX:r.left+r.width/2,clientY:r.top+r.height/2,preventDefault(){},stopPropagation(){}},msg)
-    }
+    if(dx<-58)startReply(msg.id)
     resetSwipeVisual(wrapper,icon)
   },{passive:true})
   wrapper.addEventListener('touchcancel',()=>{tracking=false;resetSwipeVisual(wrapper,icon)},{passive:true})
@@ -89,9 +80,9 @@ let html=''
 // Reply
 if(msg.reply_to){
 if(msg.reply_to.message_type==='sticker'&&msg.reply_to.file_url){
-html+=`<div class="message-reply-bubble" data-reply-id="${msg.reply_to.id}"><div class="reply-bubble-line"></div><div class="reply-bubble-content"><span class="reply-bubble-name">${escapeHtml(msg.reply_to.sender_name)}</span><img src="${msg.reply_to.file_url}" class="reply-sticker" alt="sticker"></div></div>`
+html+=`<div class="message-reply-bubble"><div class="reply-bubble-line"></div><div class="reply-bubble-content"><span class="reply-bubble-name">${escapeHtml(msg.reply_to.sender_name)}</span><img src="${msg.reply_to.file_url}" class="reply-sticker" alt="sticker"></div></div>`
 }else{
-html+=`<div class="message-reply-bubble" data-reply-id="${msg.reply_to.id}"><div class="reply-bubble-line"></div><div class="reply-bubble-content"><span class="reply-bubble-name">${escapeHtml(msg.reply_to.sender_name)}</span><span class="reply-bubble-text">${escapeHtml(msg.reply_to.content||'Медиа')}</span></div></div>`}}
+html+=`<div class="message-reply-bubble"><div class="reply-bubble-line"></div><div class="reply-bubble-content"><span class="reply-bubble-name">${escapeHtml(msg.reply_to.sender_name)}</span><span class="reply-bubble-text">${escapeHtml(msg.reply_to.content||'Медиа')}</span></div></div>`}}
 
 // Forwarded label
 if(msg.forward_from){
@@ -141,9 +132,6 @@ hb.style.bottom='-30px';hb.style.left='50%';hb.style.transform='translateX(-50%)
 hb.innerHTML=['👍','❤️','😂','😮','😢','🔥'].map(r=>`<button onclick="toggleReaction(${msg.chat_id},${msg.id},'${r}');event.stopPropagation()">${r}</button>`).join('')
 wrapper.appendChild(hb)}}
 
-const replyBubble=wrapper.querySelector('.message-reply-bubble')
-if(replyBubble){replyBubble.addEventListener('click',(e)=>{e.stopPropagation();jumpToMessage(replyBubble.dataset.replyId)})}
-
 // Reactions badge for non-post
 if(!msg._isPost&&msg.reactions&&Object.keys(msg.reactions).length>0){
 const rd=document.createElement('div');rd.className='message-reactions'
@@ -162,25 +150,6 @@ if(!msg._isPost){
 const bubble=wrapper.querySelector('.message-bubble')||wrapper
 bubble.oncontextmenu=(e)=>{e.preventDefault();showMessageActions(e,msg)}}
 return wrapper}
-
-async function jumpToMessage(mid){
-if(!mid)return
-let el=document.querySelector(`[data-message-id="${mid}"]`)
-let tries=0
-while(!el&&hasMoreMessages&&!isLoadingMessages&&window.currentChatId&&tries<8){
-  showToast('Ищу исходное сообщение...',900)
-  await loadMessages(window.currentChatId,false,window.currentCommentsPostId||null)
-  await new Promise(r=>setTimeout(r,90))
-  el=document.querySelector(`[data-message-id="${mid}"]`)
-  tries++
-}
-if(!el){showToast('Исходное сообщение недоступно');return}
-el.scrollIntoView({behavior:'smooth',block:'center'})
-el.classList.remove('message-jump-highlight')
-void el.offsetWidth
-el.classList.add('message-jump-highlight')
-setTimeout(()=>el.classList.remove('message-jump-highlight'),1600)
-}
 
 function toggleVoicePlay(vid){
 const btn=document.getElementById(`${vid}-btn`);if(!btn)return
