@@ -14,9 +14,12 @@ function renderChatsList(){
 const container=document.getElementById('chats-list')
 container.innerHTML=''
 if(chatsList.length===0){container.innerHTML='<div style="padding:40px;text-align:center;color:var(--text-muted)">Нет диалогов<br><small>Найдите пользователя через поиск 🔍</small></div>';return}
-const channels=chatsList.filter(x=>x._isChannel).sort((a,b)=>(a.name||'').localeCompare(b.name||''))
-const chats=chatsList.filter(x=>!x._isChannel).sort((a,b)=>{const ta=a.last_message?a.last_message.created_at:'';const tb=b.last_message?b.last_message.created_at:'';return tb.localeCompare(ta)})
-const sorted=[...channels,...chats]
+// Treat channels and chats equally, sort by last activity date
+const sorted=chatsList.slice().sort((a,b)=>{
+  const ta=a.last_message?a.last_message.created_at:(a.created_at||'');
+  const tb=b.last_message?b.last_message.created_at:(b.created_at||'');
+  return tb.localeCompare(ta);
+})
 sorted.forEach(ch=>container.appendChild(createChatItem(ch)))}
 
 function createChatItem(chat){
@@ -116,8 +119,9 @@ catch(e){showToast('Ошибка: '+e.message)}}
 
 function showSearch(){const bar=document.getElementById('search-bar');bar.style.display=bar.style.display==='none'?'block':'none';if(bar.style.display==='block')document.getElementById('search-input').focus();else document.getElementById('search-results').innerHTML=''}
 
-function updateChatPreview(chatId,msg){
-const item=document.querySelector(`[data-chat-id="${chatId}"]`)
+function updateChatPreview(chatId,msg,isChannel=false){
+const selector=`[data-chat-id="${chatId}"][data-is-channel="${isChannel?'1':'0'}"]`
+const item=document.querySelector(selector)
 if(item){const p=item.querySelector('.chat-item-preview');const t=item.querySelector('.chat-item-time')
 if(p){if(msg.message_type==='sticker')p.textContent='😊 Стикер';else if(msg.message_type==='image')p.textContent='🖼 Фото';else if(msg.message_type==='voice')p.textContent='🎤 Голосовое';else p.textContent=msg.content||'📎 Медиа'}
 if(t)t.textContent=formatTime(msg.created_at);const parent=item.parentElement;if(parent)parent.prepend(item)}}

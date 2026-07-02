@@ -23,27 +23,36 @@ function initSwipeOnMessage(wrapper,msg){
       if(Math.abs(dy)>Math.abs(dx)*1.15){resetSwipeVisual(wrapper,icon);tracking=false;return}
     }
     // Telegram-like: swipe right-to-left anywhere on the message row opens reply.
-    // Swipe left-to-right is reserved for mobile navigation back to chat list.
     if(dx<0){
-      const clamped=Math.max(dx,-86)
+      const clamped=Math.max(dx,-100)
       wrapper.style.transform=`translateX(${clamped}px)`
-      icon.style.opacity=String(Math.min(1,Math.abs(clamped)/54))
-      icon.style.transform=`translateX(${Math.max(clamped,-54)+26}px) translateY(-50%) scale(${Math.abs(clamped)>58?1.08:1})`
-      icon.classList.toggle('active',Math.abs(clamped)>58)
+      icon.style.opacity=String(Math.min(1,Math.abs(clamped)/60))
+      icon.style.transform=`translateX(${Math.max(clamped,-60)+26}px) translateY(-50%) scale(${Math.abs(clamped)>70?1.1:1})`
+      icon.classList.toggle('active',Math.abs(clamped)>70)
     }
   },{passive:true})
   wrapper.addEventListener('touchend',e=>{
     if(!tracking)return;tracking=false
     wrapper.style.transition='transform .22s ease';icon.style.transition='opacity .18s, transform .18s'
     const absX=Math.abs(dx),absY=Math.abs(dy)
-    if(dx<-58){startReply(msg.id);resetSwipeVisual(wrapper,icon);return}
-    // Mobile tap on a regular message opens the same action menu with reactions.
-    // Do not hijack taps on media, links, buttons, or reply preview bubbles.
-    const target=e.changedTouches&&document.elementFromPoint(e.changedTouches[0].clientX,e.changedTouches[0].clientY)
-    const isInteractive=target&&target.closest('button,a,video,.message-image,.message-reply-bubble,.post-reaction-badge,.reaction-badge')
-    if(Date.now()-touchStartedAt<420&&absX<10&&absY<10&&!isInteractive&&window.innerWidth<=768){
-      const r=wrapper.getBoundingClientRect()
-      showMessageActions({clientX:r.left+r.width/2,clientY:r.top+r.height/2,preventDefault(){},stopPropagation(){}},msg)
+    // Increased threshold for reply to 70px
+    if(dx<-70){startReply(msg.id);resetSwipeVisual(wrapper,icon);return}
+    
+    // Tap logic: only if movement was minimal
+    if(Date.now()-touchStartedAt<400&&absX<10&&absY<10&&window.innerWidth<=768){
+      const t=e.changedTouches[0]
+      const target=document.elementFromPoint(t.clientX,t.clientY)
+      // IMPORTANT: Only trigger menu if the tap was on the bubble OR the message content itself (for no-bubble types)
+      const isContent = target && (target.closest('.message-bubble') || target.closest('.sticker-message') || target.closest('.msg-image-wrap') || target.closest('.message-video'))
+      
+      if(isContent){
+        const isInteractive=target&&target.closest('button,a,video,.message-image,.message-reply-bubble,.post-reaction-badge,.reaction-badge')
+        // We allow the menu on images/videos if it's NOT the interactive part (like play button), 
+        // but here it's safer to just exclude interactive elements.
+        if(!isInteractive){
+          showMessageActions({clientX:t.clientX,clientY:t.clientY,preventDefault(){},stopPropagation(){}},msg)
+        }
+      }
     }
     resetSwipeVisual(wrapper,icon)
   },{passive:true})
@@ -256,10 +265,22 @@ picker.innerHTML=['👍','❤️','😂','😮','😢','🔥'].map(r=>`<button c
 picker.style.left=Math.min(event.clientX,window.innerWidth-320)+'px';picker.style.top=Math.min(event.clientY,window.innerHeight-60)+'px';picker.style.display='flex'}
 function closeReactionPicker(){document.getElementById('reaction-picker').style.display='none'}
 
-function updateMessageReactions(mid,emoji,uid,added){
+function updateMessageReactions(mid,emoji,uid,added,removedEmoji=null){
 const w=document.querySelector(`[data-message-id="${mid}"]`);if(!w)return
 let rd=w.querySelector('.message-reactions')
 if(!rd){rd=document.createElement('div');rd.className='message-reactions';const meta=w.querySelector('.message-meta');if(meta)w.insertBefore(rd,meta);else w.appendChild(rd)}
+
+// Handle removed emoji if provided (user switched reaction)
+if(removedEmoji && removedEmoji !== emoji) {
+    const prevBadge = rd.querySelector(`[data-emoji="${removedEmoji}"]`)
+    if(prevBadge) {
+        const c = prevBadge.querySelector('.rc');
+        let cnt = parseInt(c.textContent);
+        if(cnt <= 1) prevBadge.remove();
+        else c.textContent = cnt - 1;
+    }
+}
+
 const exist=rd.querySelector(`[data-emoji="${emoji}"]`)
 if(exist){const c=exist.querySelector('.rc');let cnt=parseInt(c.textContent);c.textContent=added?cnt+1:cnt-1;if(!added&&cnt-1<=0)exist.remove()}
 else if(added){const b=document.createElement('span');b.className='reaction-badge';b.dataset.emoji=emoji;b.innerHTML=`${emoji} <span class="rc">1</span>`;b.onclick=(e)=>{e.stopPropagation();const msg=window.currentMessages?.find(m=>m.id==mid);if(msg)toggleReaction(msg.chat_id,mid,emoji)};rd.appendChild(b)}
@@ -268,6 +289,9 @@ if(rd.children.length===0)rd.remove()}
 function showMessageActions(event,msg){
 if(event.preventDefault)event.preventDefault()
 const menu=document.getElementById('message-actions-menu')
+menu._openedAt=Date.now()
+menu.style.pointerEvents='none'
+setTimeout(()=>menu.style.pointerEvents='auto',250)
 const reactions=['👍','❤️','😂','😮','😢','🔥','🎉']
 let html=`<div class="context-reactions">${reactions.map(r=>`<button onclick="toggleReaction(${msg.chat_id},${msg.id},'${r}');closeMessageActions();event.stopPropagation()">${r}</button>`).join('')}</div>`
 html+=`<button class="delete-menu-btn" onclick="startReply(${msg.id})">↩️ Ответить</button>`
@@ -278,47 +302,46 @@ if(msg.sender_id===currentUser.id){
 }
 menu.innerHTML=html
 menu.style.display='block'
-positionMessageActionsMenu(menu,msg,event)
+positionMenuAt(menu, event)
 }
-function positionMessageActionsMenu(menu,msg,event){
-const w=document.querySelector(`[data-message-id="${msg.id}"]`)
-const rect=w?w.getBoundingClientRect():{left:event.clientX,top:event.clientY,right:event.clientX,bottom:event.clientY,width:0,height:0}
-const mw=menu.offsetWidth||220,mh=menu.offsetHeight||180,pad=8
-const isOwn=msg.sender_id===currentUser.id
-let left=isOwn?rect.left-mw-10:rect.right+10
-let top=rect.top
-if(left<pad)left=pad
-if(left+mw>window.innerWidth-pad)left=window.innerWidth-mw-pad
-if(top+mh>window.innerHeight-pad)top=window.innerHeight-mh-pad
-if(top<pad)top=pad
-menu.style.left=left+'px';menu.style.top=top+'px'
+
+function positionMenuAt(menu, event){
+  const mw=menu.offsetWidth||220, mh=menu.offsetHeight||200, pad=12
+  let left=event.clientX, top=event.clientY
+  
+  // Adjust position so it doesn't go off screen
+  if(left+mw > window.innerWidth-pad) left = window.innerWidth - mw - pad
+  if(top+mh > window.innerHeight-pad) top = window.innerHeight - mh - pad
+  if(left < pad) left = pad
+  if(top < pad) top = pad
+  
+  menu.style.left=left+'px';menu.style.top=top+'px'
 }
+
 function closeMessageActions(){const m=document.getElementById('message-actions-menu');if(m)m.style.display='none'}
 function showPostActions(event,msg){
 if(event.preventDefault)event.preventDefault()
 const menu=document.getElementById('message-actions-menu')
+menu._openedAt=Date.now()
+menu.style.pointerEvents='none'
+setTimeout(()=>menu.style.pointerEvents='auto',250)
 const reactions=['👍','❤️','😂','😮','😢','🔥','🎉']
 let html=`<div class="context-reactions">${reactions.map(r=>`<button onclick="togglePostReaction(${msg.id},'${r}');closeMessageActions();event.stopPropagation()">${r}</button>`).join('')}</div>`
 html+=`<button class="delete-menu-btn" onclick="openCommentsForPost(${msg.id});closeMessageActions()">💬 Комментарии</button>`
 html+=`<button class="delete-menu-btn" onclick="startForwardPost(${msg.id})">↪️ Переслать</button>`
 menu.innerHTML=html
 menu.style.display='block'
-positionPostActionsMenu(menu,msg,event)
-}
-function positionPostActionsMenu(menu,msg,event){
-const w=document.querySelector(`[data-message-id="${msg.id}"]`)
-const rect=w?w.getBoundingClientRect():{left:event.clientX,top:event.clientY,right:event.clientX,bottom:event.clientY,width:0,height:0}
-const mw=menu.offsetWidth||220,mh=menu.offsetHeight||150,pad=8
-let left=rect.right+10
-let top=rect.top
-if(left+mw>window.innerWidth-pad)left=rect.left-mw-10
-if(left<pad)left=pad
-if(top+mh>window.innerHeight-pad)top=window.innerHeight-mh-pad
-if(top<pad)top=pad
-menu.style.left=left+'px';menu.style.top=top+'px'
+positionMenuAt(menu, event)
 }
 
-document.addEventListener('click',(e)=>{const m=document.getElementById('message-actions-menu');const p=document.getElementById('reaction-picker');if(m&&!m.contains(e.target))m.style.display='none';if(p&&!p.contains(e.target))p.style.display='none'})
+document.addEventListener('click',(e)=>{
+const m=document.getElementById('message-actions-menu');const p=document.getElementById('reaction-picker')
+if(m && m.style.display==='block'){
+const timeSinceOpen = Date.now() - (m._openedAt || 0);
+if(timeSinceOpen < 250) return; 
+if(!m.contains(e.target)) m.style.display='none';
+}
+if(p&&!p.contains(e.target))p.style.display='none'})
 
 async function deleteMessage(cid,mid){document.getElementById('message-actions-menu').style.display='none';try{await api.deleteMessage(cid,mid);loadMessages(cid,true)}catch(e){showToast(e.message)}}
 

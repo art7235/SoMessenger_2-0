@@ -4,6 +4,7 @@ function closeModal(){document.getElementById('modal-overlay').style.display='no
 document.getElementById('modal-overlay')?.addEventListener('click',(e)=>{if(e.target===document.getElementById('modal-overlay')){closeModal();closeAllPopups()}})
 function showMenu(){const m=document.getElementById('sidebar-menu');m.style.display=m.style.display==='none'?'block':'none'}
 function hideMenu(){document.getElementById('sidebar-menu').style.display='none'}
+document.getElementById('chats-list')?.addEventListener('scroll',hideMenu,{passive:true})
 document.addEventListener('click',(e)=>{const m=document.getElementById('sidebar-menu');if(m&&!m.contains(e.target)&&!e.target.closest('[onclick*="showMenu"]'))m.style.display='none';const am=document.getElementById('attach-menu');if(am&&am.style.display==='block'&&!am.contains(e.target)&&!e.target.closest('.attach-btn'))am.style.display='none'})
 
 async function showChatInfo(){
