@@ -22,7 +22,8 @@ class UserService:
             if settings.SMTP_USER and settings.SMTP_PASSWORD:
                 msg = MIMEMultipart("alternative")
                 msg["Subject"] = "SoMessenger — Код подтверждения"
-                msg["From"] = settings.SMTP_USER; msg["To"] = email
+                msg["From"] = f"SoMessenger <{settings.SMTP_USER}>"
+                msg["To"] = email
                 html = f"""<html><body style="background:#1a0533;font-family:Arial;color:#fff;padding:40px;">
                 <div style="max-width:500px;margin:0 auto;background:#2d1054;border-radius:16px;padding:32px;text-align:center;">
                 <h1 style="color:#b06ef3;">SoMessenger</h1><p>Привет, {display_name}!</p>

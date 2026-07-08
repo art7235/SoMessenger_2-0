@@ -42,14 +42,34 @@ async def get_public_channels(u: User = Depends(get_current_user), db: AsyncSess
 @router.get("/my")
 async def get_my_channels(u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     r = await db.execute(select(Channel).where(Channel.owner_id==u.id))
-    return [{"id":c.id,"name":c.name,"description":c.description,"username":c.username,
-        "avatar_url":c.avatar_url,"subscribers_count":c.subscribers_count} for c in r.scalars().all()]
+    channels = r.scalars().all()
+    res = []
+    for c in channels:
+        lp = (await db.execute(select(ChannelPost).where(ChannelPost.channel_id==c.id)
+            .order_by(ChannelPost.created_at.desc()).limit(1))).scalar_one_or_none()
+        lm = None
+        if lp:
+            lm = {"content":decrypt_text(lp.content),"message_type":lp.message_type,"created_at":lp.created_at.isoformat()+"Z"}
+        res.append({"id":c.id,"name":c.name,"description":c.description,"username":c.username,
+            "avatar_url":c.avatar_url,"subscribers_count":c.subscribers_count,"last_message":lm,
+            "created_at":c.created_at.isoformat()+"Z"})
+    return res
 
 @router.get("/joined")
 async def get_joined_channels(u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     r = await db.execute(select(Channel).join(ChannelSubscriber).where(ChannelSubscriber.user_id==u.id))
-    return [{"id":c.id,"name":c.name,"description":c.description,"username":c.username,
-        "avatar_url":c.avatar_url,"subscribers_count":c.subscribers_count} for c in r.scalars().all()]
+    channels = r.scalars().all()
+    res = []
+    for c in channels:
+        lp = (await db.execute(select(ChannelPost).where(ChannelPost.channel_id==c.id)
+            .order_by(ChannelPost.created_at.desc()).limit(1))).scalar_one_or_none()
+        lm = None
+        if lp:
+            lm = {"content":decrypt_text(lp.content),"message_type":lp.message_type,"created_at":lp.created_at.isoformat()+"Z"}
+        res.append({"id":c.id,"name":c.name,"description":c.description,"username":c.username,
+            "avatar_url":c.avatar_url,"subscribers_count":c.subscribers_count,"last_message":lm,
+            "created_at":c.created_at.isoformat()+"Z"})
+    return res
 
 @router.get("/search")
 async def search_channels(q: str, db: AsyncSession = Depends(get_db)):
@@ -167,8 +187,16 @@ async def create_post(channel_id: int, data: dict,
     db.add(post); await db.flush()
     await ChatService.ensure_post_root_message(db, ch, post, u.id)
     await db.commit(); await db.refresh(post)
-    return {"id":post.id,"content":decrypt_text(post.content),"file_url":post.file_url,
+    res = {"id":post.id,"channel_id":post.channel_id,"author_id":post.author_id,
+        "content":decrypt_text(post.content),"file_url":post.file_url,
         "message_type":post.message_type,"created_at":post.created_at.isoformat()+"Z"}
+    
+    # Broadcast to subscribers
+    sub_ids = (await db.execute(select(ChannelSubscriber.user_id).where(ChannelSubscriber.channel_id==channel_id))).scalars().all()
+    all_recipients = set(sub_ids) | {ch.owner_id}
+    await manager.broadcast_to_users(list(all_recipients), {"type":"new_post","channel_id":channel_id,"post":res})
+    
+    return res
 
 @router.post("/{channel_id}/posts/{post_id}/upload")
 async def upload_post_media(channel_id: int, post_id: int, file: UploadFile=File(...),
@@ -206,8 +234,21 @@ async def react_to_post(channel_id: int, post_id: int, data: dict,
     if not post: raise HTTPException(404,"Пост не найден")
     emoji = data.get("emoji")
     if not emoji: raise HTTPException(400,"Emoji обязателен")
-    r = await MessageService.add_post_reaction(db, post_id, u.id, emoji)
-    return {"status":"ok","added":r is not None}
+    r, removed = await MessageService.add_post_reaction(db, post_id, u.id, emoji)
+    # Broadcast to common channel chat if exists
+    chat = (await db.execute(select(Chat).where(Chat.channel_id==channel_id))).scalar_one_or_none()
+    if chat:
+        mids = await ChatService.get_chat_member_ids(db, chat.id)
+        # For posts, we use reaction type too but reference post_id
+        await manager.broadcast_to_chat_members(mids, {
+            "type": "reaction",
+            "post_id": post_id,
+            "emoji": emoji,
+            "user_id": u.id,
+            "added": r is not None,
+            "removed_emoji": removed
+        })
+    return {"status":"ok","added":r is not None,"removed_emoji":removed}
 
 # Comments chat
 @router.get("/{channel_id}/posts/{post_id}/comments-chat")

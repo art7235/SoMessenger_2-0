@@ -31,7 +31,7 @@ async def _send_password_reset_email(email: str, display_name: str, code: str):
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = "SoMessenger — восстановление пароля"
-        msg["From"] = settings.SMTP_USER
+        msg["From"] = f"SoMessenger <{settings.SMTP_USER}>"
         msg["To"] = email
         html = f"""<html><body style="background:#1a0533;font-family:Arial;color:#fff;padding:40px;">
         <div style="max-width:500px;margin:0 auto;background:#2d1054;border-radius:16px;padding:32px;text-align:center;">

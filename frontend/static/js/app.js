@@ -67,4 +67,53 @@ document.addEventListener('DOMContentLoaded',()=>{updateAppViewportHeight();inst
 
 async function init(){const token=localStorage.getItem('token');const saved=localStorage.getItem('user');if(token&&saved){try{api.setToken(token);const user=await api.getMe();window.currentUser=user;localStorage.setItem('user',JSON.stringify(user));startApp(user)}catch(e){api.clearToken();showAuthScreen()}}else showAuthScreen()}
 function showAuthScreen(){document.getElementById('auth-screen').classList.add('active');document.getElementById('main-screen').classList.remove('active')}
-async function startApp(user){window.currentUser=user;document.getElementById('auth-screen').classList.remove('active');document.getElementById('main-screen').classList.add('active');document.getElementById('active-chat').style.display='none';document.getElementById('welcome-screen').style.display='flex';document.getElementById('input-area').style.display='flex';document.getElementById('join-bar').style.display='none';await loadChats();connectWebSocket();setTimeout(updateAppViewportHeight,50);console.log(`✅ Добро пожаловать, ${user.display_name}!`)}
+async function startApp(user){
+    window.currentUser=user;
+    document.getElementById('auth-screen').classList.remove('active');
+    document.getElementById('main-screen').classList.add('active');
+    document.getElementById('active-chat').style.display='none';
+    document.getElementById('welcome-screen').style.display='flex';
+    document.getElementById('input-area').style.display='flex';
+    document.getElementById('join-bar').style.display='none';
+    await loadChats();
+    connectWebSocket();
+    setTimeout(updateAppViewportHeight,50);
+    console.log(`✅ Добро пожаловать, ${user.display_name}!`);
+    
+    // Initialize Push Notifications for Capacitor
+    if (window.Capacitor && window.Capacitor.getPlatform() !== 'web') {
+        initPushNotifications();
+    }
+}
+
+async function initPushNotifications() {
+    const { PushNotifications } = Capacitor.Plugins;
+
+    let perm = await PushNotifications.checkPermissions();
+    if (perm.receive === 'prompt') perm = await PushNotifications.requestPermissions();
+    if (perm.receive !== 'granted') return;
+
+    await PushNotifications.register();
+
+    PushNotifications.addListener('registration', async (token) => {
+        console.log('FCM Token:', token.value);
+        try { await api.saveFcmToken(token.value); } catch(e) {}
+    });
+
+    PushNotifications.addListener('registrationError', (err) => {
+        console.error('Push Error:', err);
+    });
+
+    PushNotifications.addListener('pushNotificationReceived', (notification) => {
+        // App is in foreground, we can show a toast or do nothing (WebSocket handles it)
+        console.log('Push received in foreground:', notification);
+    });
+
+    PushNotifications.addListener('pushNotificationActionPerformed', (notification) => {
+        const data = notification.notification.data;
+        if (data && data.chat_id) {
+            // Logic to open the specific chat when tapping notification
+            console.log('Action performed, chat_id:', data.chat_id);
+        }
+    });
+}

@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     DONATION_ALERTS_URL: str = "https://dalink.to/somessenger"
     ALGORITHM: str = "HS256"
+    FIREBASE_KEY_PATH: str = "firebase-key.json"
 
     # Secret token for admin panel.
     # Access only via https://.../admin/YOUR_TOKEN

@@ -161,10 +161,17 @@ async def forward_message(chat_id: int, message_id: int, data: dict,
 async def react_to_message(chat_id: int, message_id: int, data: dict,
         u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     if not await ChatService.is_chat_member(db, chat_id, u.id): raise HTTPException(403,"Нет доступа")
-    r = await MessageService.add_reaction(db, message_id, u.id, data["emoji"])
+    r, removed = await MessageService.add_reaction(db, message_id, u.id, data["emoji"])
     mids = await ChatService.get_chat_member_ids(db, chat_id)
-    await manager.broadcast_to_chat_members(mids, {"type":"reaction","message_id":message_id,"chat_id":chat_id,
-        "emoji":data["emoji"],"user_id":u.id,"added":r is not None})
+    await manager.broadcast_to_chat_members(mids, {
+        "type":"reaction",
+        "message_id":message_id,
+        "chat_id":chat_id,
+        "emoji":data["emoji"],
+        "user_id":u.id,
+        "added": r is not None,
+        "removed_emoji": removed
+    })
     return {"status":"ok"}
 
 @router.delete("/{chat_id}/messages/{message_id}")

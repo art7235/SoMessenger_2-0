@@ -5,6 +5,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from app.core.database import create_tables
 from app.api.routes import auth, users, chats, channels, stickers, ws, admin
 from app.core.config import settings
+from app.services.notification_service import init_firebase
 import os, time
 from collections import defaultdict, deque
 
@@ -127,4 +128,5 @@ async def startup():
         if settings.DEFAULT_ADMIN_PASSWORD == "admin123":
             print("⚠️  DEFAULT_ADMIN_PASSWORD стандартный")
     await create_tables()
+    init_firebase()
     print("✅ SoMessenger запущен")

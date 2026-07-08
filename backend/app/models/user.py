@@ -19,5 +19,6 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     last_seen = Column(DateTime, default=datetime.utcnow)
     is_online = Column(Boolean, default=False)
+    fcm_token = Column(String(500), nullable=True)
     sent_messages = relationship("Message", back_populates="sender", foreign_keys="Message.sender_id")
     chat_memberships = relationship("ChatMember", back_populates="user")

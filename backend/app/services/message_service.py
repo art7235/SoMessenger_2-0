@@ -4,6 +4,8 @@ from app.models.message import Message
 from app.models.reaction import Reaction
 from app.core.encryption import encrypt_text
 
+from app.services.notification_service import send_push_notification
+
 class MessageService:
     @staticmethod
     async def create_message(db, chat_id, sender_id, content=None, msg_type="text",
@@ -26,7 +28,25 @@ class MessageService:
             .options(selectinload(Message.reactions))
             .options(selectinload(Message.reply_to).selectinload(Message.sender))
             .options(selectinload(Message.forward_from).selectinload(Message.sender)))
-        return r.scalar_one()
+        msg = r.scalar_one()
+
+        # Try sending push notifications to members
+        try:
+            from app.models.chat import ChatMember
+            members = (await db.execute(select(User).join(ChatMember).where(ChatMember.chat_id==chat_id, User.id != sender_id))).scalars().all()
+            for m in members:
+                if m.fcm_token:
+                    text_content = content if msg_type == 'text' else "Медиа-сообщение"
+                    await send_push_notification(
+                        m.fcm_token, 
+                        f"Сообщение от {msg.sender.display_name}", 
+                        text_content,
+                        {"chat_id": str(chat_id), "type": "new_message"}
+                    )
+        except Exception as e:
+            print(f"⚠️ Push broadcast error: {e}")
+
+        return msg
 
     @staticmethod
     async def get_chat_messages(db, chat_id, limit=50, offset=0, reply_to_id=None):
@@ -45,21 +65,29 @@ class MessageService:
     async def add_reaction(db, message_id, user_id, emoji):
         existing = await db.execute(select(Reaction).where(Reaction.message_id==message_id, Reaction.user_id==user_id, Reaction.emoji==emoji))
         r = existing.scalar_one_or_none()
-        if r: await db.delete(r); await db.commit(); return None
+        if r:
+            await db.delete(r); await db.commit()
+            return None, emoji
         old = (await db.execute(select(Reaction).where(Reaction.message_id==message_id, Reaction.user_id==user_id))).scalar_one_or_none()
+        removed = old.emoji if old else None
         if old: await db.delete(old)
-        r = Reaction(message_id=message_id, user_id=user_id, emoji=emoji)
-        db.add(r); await db.commit(); await db.refresh(r); return r
+        new_r = Reaction(message_id=message_id, user_id=user_id, emoji=emoji)
+        db.add(new_r); await db.commit(); await db.refresh(new_r)
+        return new_r, removed
 
     @staticmethod
     async def add_post_reaction(db, post_id, user_id, emoji):
         existing = await db.execute(select(Reaction).where(Reaction.channel_post_id==post_id, Reaction.user_id==user_id, Reaction.emoji==emoji))
         r = existing.scalar_one_or_none()
-        if r: await db.delete(r); await db.commit(); return None
+        if r:
+            await db.delete(r); await db.commit()
+            return None, emoji
         old = (await db.execute(select(Reaction).where(Reaction.channel_post_id==post_id, Reaction.user_id==user_id))).scalar_one_or_none()
+        removed = old.emoji if old else None
         if old: await db.delete(old)
-        r = Reaction(channel_post_id=post_id, user_id=user_id, emoji=emoji)
-        db.add(r); await db.commit(); await db.refresh(r); return r
+        new_r = Reaction(channel_post_id=post_id, user_id=user_id, emoji=emoji)
+        db.add(new_r); await db.commit(); await db.refresh(new_r)
+        return new_r, removed
 
     @staticmethod
     async def delete_message(db, message_id, user_id):

@@ -27,7 +27,14 @@ async def get_me(u: User = Depends(get_current_user)):
     return {"id":u.id,"username":u.username,"display_name":u.display_name,"email":u.email,"bio":u.bio,
         "avatar_url":u.avatar_url,"is_online":u.is_online,
         "last_seen":u.last_seen.isoformat()+"Z" if u.last_seen else None,
-        "created_at":u.created_at.isoformat()+"Z" if u.created_at else None}
+        "created_at":u.created_at.isoformat()+"Z" if u.created_at else None,
+        "fcm_token": u.fcm_token}
+
+@router.post("/me/fcm-token")
+async def update_fcm_token(data: dict, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    u.fcm_token = data.get("token")
+    await db.commit()
+    return {"status":"ok"}
 
 @router.put("/me")
 async def update_profile(data: dict, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
