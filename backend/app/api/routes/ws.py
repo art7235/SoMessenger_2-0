@@ -15,12 +15,16 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
     user_id = int(payload["sub"])
 
     async with AsyncSessionLocal() as db:
+        me = await UserService.get_user_by_id(db, user_id)
+        display_name = me.display_name if me else "Пользователь"
         await UserService.update_online_status(db, user_id, True)
         # Get user's contacts
         chats = await ChatService.get_user_chats(db, user_id)
         contact_ids = set()
+        chat_member_ids = {}
         for chat in chats:
             mids = await ChatService.get_chat_member_ids(db, chat.id)
+            chat_member_ids[chat.id] = mids
             for mid in mids:
                 if mid != user_id: contact_ids.add(mid)
 
@@ -36,8 +40,11 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
                 if msg.get("type")=="ping":
                     await ws.send_text(json.dumps({"type":"pong"}))
                 elif msg.get("type")=="typing":
-                    await manager.broadcast_to_chat_members(msg.get("member_ids",[]),
-                        {"type":"typing","user_id":user_id,"chat_id":msg.get("chat_id")})
+                    cid = msg.get("chat_id")
+                    targets = [m for m in chat_member_ids.get(cid, []) if m != user_id]
+                    if targets:
+                        await manager.broadcast_to_users(targets,
+                            {"type":"typing","user_id":user_id,"chat_id":cid,"user_name":display_name})
             except: pass
     except WebSocketDisconnect:
         manager.disconnect(ws, user_id)

@@ -4,12 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
 <title>SoMessenger</title>
-<link rel="stylesheet" href="/static/css/main.css">
-<link rel="stylesheet" href="/static/css/auth.css">
-<link rel="stylesheet" href="/static/css/sidebar.css">
-<link rel="stylesheet" href="/static/css/chat.css">
-<link rel="stylesheet" href="/static/css/profile.css">
-<link rel="stylesheet" href="/static/css/calls.css">
+<link rel="stylesheet" href="/static/css/main.css?v=7">
+<link rel="stylesheet" href="/static/css/auth.css?v=7">
+<link rel="stylesheet" href="/static/css/sidebar.css?v=7">
+<link rel="stylesheet" href="/static/css/chat.css?v=7">
+<link rel="stylesheet" href="/static/css/profile.css?v=7">
+<link rel="stylesheet" href="/static/css/calls.css?v=7">
+<link rel="stylesheet" href="/static/css/members.css?v=7">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>">
 </head>
 <body>
@@ -25,6 +26,7 @@
 <input type="password" id="login-password" placeholder="Пароль" class="auth-input">
 <button id="login-btn" class="auth-btn primary">Войти</button>
 <p class="auth-switch">Нет аккаунта? <span onclick="showRegister()">Зарегистрироваться</span></p>
+<p class="auth-switch" style="margin-top:4px"><span onclick="showPasswordReset()">Забыли пароль?</span></p>
 </div>
 <div id="register-form" class="auth-form">
 <h2>Регистрация</h2>
@@ -74,6 +76,7 @@
 <div id="chats-list" class="chats-list"></div>
 <div id="sidebar-menu" class="sidebar-menu" style="display:none">
 <div class="menu-item" onclick="showProfile()">👤 Профиль</div>
+<div class="menu-item" onclick="showChangePassword()">🔑 Сменить пароль</div>
 <div class="menu-item" onclick="showGroupModal()">👥 Создать группу</div>
 <div class="menu-item" onclick="showCreateChannel()">📢 Создать канал</div>
 <div class="menu-item" onclick="showStickers()">😊 Стикеры</div>
@@ -108,8 +111,13 @@
 <div id="chat-header-actions" class="chat-header-actions">
 <button id="call-btn" class="icon-btn" onclick="startVoiceCall()" title="Звонок">📞</button>
 <button id="vcall-btn" class="icon-btn" onclick="startVideoCall()" title="Видеозвонок">📹</button>
+<button id="chat-search-btn" class="icon-btn" onclick="toggleChatSearch()" title="Поиск">🔍</button>
 <button id="channel-menu-btn" class="icon-btn" onclick="showChannelMenu()" title="Ещё" style="display:none">⋮</button>
 </div>
+</div>
+<!-- Chat search bar -->
+<div id="chat-search-bar" style="display:none;padding:8px 16px;background:var(--bg-secondary);border-bottom:1px solid var(--border)">
+<input type="text" id="chat-search-input" placeholder="Поиск в чате..." class="search-input" style="width:100%" oninput="debouncedChatSearch(this.value)">
 </div>
 
 <div id="messages-container" class="messages-container">
@@ -223,16 +231,113 @@ onkeydown="handleInputKeydown(event)" oninput="handleInputChange()"></textarea>
 <button onclick="createChannel()" class="auth-btn primary">Создать</button>
 </div>
 </div>
-<div id="modal-info" class="modal" style="display:none">
+<div id="modal-info" class="modal info-modal" style="display:none">
 <div class="modal-header"><h3 id="info-title">Информация</h3><button onclick="closeModal()">✕</button></div>
 <div class="modal-body" style="align-items:center;text-align:center">
 <div style="position:relative;width:100px;height:100px;margin:10px auto">
 <img id="info-avatar" src="" alt="" style="width:100px;height:100px;border-radius:50%;object-fit:cover;background:var(--bg-tertiary);border:3px solid var(--accent)">
 <label id="info-avatar-edit" style="display:none;position:absolute;bottom:0;right:0;background:var(--accent);border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;cursor:pointer">📷<input type="file" accept="image/*" style="display:none" onchange="uploadInfoAvatar(this)"></label>
 </div>
+<div id="info-name-view">
 <h3 id="info-name" style="color:var(--text-primary);margin:8px 0 4px"></h3>
 <p id="info-desc" style="color:var(--text-secondary);font-size:14px"></p>
+</div>
+<div id="info-edit-fields" style="display:none;width:100%;text-align:left">
+<input type="text" id="info-edit-name" class="auth-input" placeholder="Название">
+<textarea id="info-edit-desc" class="auth-input" rows="2" placeholder="Описание" style="margin-top:8px"></textarea>
+<button class="auth-btn primary" onclick="saveInfoEdits()" style="margin-top:8px;padding:10px">Сохранить</button>
+</div>
 <p id="info-extra" style="color:var(--text-muted);font-size:13px;margin-top:8px"></p>
+
+<div id="info-privacy" class="info-section" style="display:none">
+<div class="info-section-title"><span class="section-label"><span class="section-icon">🔒</span>Приватность</span></div>
+<label class="toggle-row"><span>Публичный</span><input type="checkbox" id="info-is-public" onchange="onInfoPrivacyToggle()"></label>
+<input type="text" id="info-username" class="auth-input" placeholder="username" onchange="onInfoUsernameChange()">
+</div>
+
+<div id="info-slowmode-section" class="info-section" style="display:none">
+<div class="info-section-title"><span class="section-label"><span class="section-icon">🐢</span>Медленный режим</span></div>
+<select id="info-slowmode" class="auth-input" onchange="onSlowModeChange()">
+<option value="0">Выключено</option>
+<option value="10">10 секунд</option>
+<option value="30">30 секунд</option>
+<option value="60">1 минута</option>
+<option value="300">5 минут</option>
+<option value="900">15 минут</option>
+</select>
+</div>
+
+<div id="info-invites" class="info-section" style="display:none">
+<div class="info-section-title"><span class="section-label"><span class="section-icon">🔗</span>Ссылка</span><button id="info-invite-create-btn" class="link-btn" onclick="createInviteLinkFlow()">+ Создать</button></div>
+<div id="info-invites-list"></div>
+</div>
+
+<div id="info-admins-section" class="info-section" style="display:none">
+<div class="info-section-title"><span class="section-label"><span class="section-icon">👑</span>Админы<span id="info-admins-count" class="count-badge">0</span></span></div>
+<div id="info-admins-list" class="member-rows"></div>
+</div>
+
+<div id="info-members-section" class="info-section" style="display:none">
+<div class="info-section-title"><span class="section-label"><span class="section-icon">👥</span>Участники<span id="info-members-count" class="count-badge">0</span></span><button class="link-btn" onclick="showAddMembersFlow()">+ Добавить</button></div>
+<div id="info-members-list" class="member-rows"></div>
+</div>
+
+<div id="info-bans-section" class="info-section" style="display:none">
+<div class="info-section-title"><span class="section-label"><span class="section-icon">⛔</span>Заблокированные</span></div>
+<div id="info-bans-list" class="member-rows"></div>
+</div>
+
+<div id="info-audit-section" class="info-section" style="display:none">
+<div class="info-section-title collapsible" onclick="toggleAuditLog()"><span class="section-label"><span class="section-icon">📋</span>Журнал действий</span><span id="info-audit-chevron" class="chevron">▸</span></div>
+<div id="info-audit-list" class="audit-rows" style="display:none"></div>
+</div>
+
+<div id="info-add-members" class="info-section" style="display:none">
+<input type="text" id="info-add-search" placeholder="Поиск участников..." class="auth-input" oninput="searchForAddMember(this.value)">
+<div id="info-add-results" class="search-results" style="position:relative;top:0;left:0;right:0"></div>
+</div>
+
+<button id="info-leave-btn" class="auth-btn" style="display:none;margin-top:12px;width:100%;background:var(--bg-tertiary);color:var(--danger)" onclick="leaveCurrentChat()">Покинуть группу</button>
+</div>
+</div>
+<div id="modal-forward" class="modal" style="display:none">
+<div class="modal-header"><h3>↪️ Переслать в...</h3><button onclick="closeModal()">✕</button></div>
+<div class="modal-body" style="padding:0;max-height:400px;overflow-y:auto">
+<div id="forward-chats-list"></div>
+</div>
+</div>
+<div id="modal-password" class="modal" style="display:none">
+<div class="modal-header"><h3>🔑 Сменить пароль</h3><button onclick="closeModal()">✕</button></div>
+<div class="modal-body">
+<input type="password" id="pw-old" placeholder="Текущий пароль" class="auth-input">
+<input type="password" id="pw-new" placeholder="Новый пароль (мин. 6)" class="auth-input">
+<input type="password" id="pw-confirm" placeholder="Подтвердите новый пароль" class="auth-input">
+<div id="pw-error" style="color:var(--danger);font-size:13px;min-height:18px"></div>
+<button onclick="changePassword()" class="auth-btn primary">Сменить пароль</button>
+<p class="auth-switch" style="margin-top:8px"><span onclick="showPasswordReset()">Забыли пароль?</span></p>
+</div>
+</div>
+<div id="modal-reset" class="modal" style="display:none">
+<div class="modal-header"><h3>🔓 Восстановление пароля</h3><button onclick="closeModal()">✕</button></div>
+<div class="modal-body">
+<div id="reset-step-1">
+<input type="email" id="reset-email-input" placeholder="Email" class="auth-input">
+<button onclick="requestResetCode()" class="auth-btn primary">Отправить код</button>
+</div>
+<div id="reset-step-2" style="display:none">
+<p style="color:var(--text-secondary);font-size:14px;margin-bottom:12px">Введите код из письма и новый пароль</p>
+<div id="reset-code-inputs" class="code-inputs">
+<input type="text" maxlength="1" class="code-input" inputmode="numeric">
+<input type="text" maxlength="1" class="code-input" inputmode="numeric">
+<input type="text" maxlength="1" class="code-input" inputmode="numeric">
+<input type="text" maxlength="1" class="code-input" inputmode="numeric">
+<input type="text" maxlength="1" class="code-input" inputmode="numeric">
+<input type="text" maxlength="1" class="code-input" inputmode="numeric">
+</div>
+<input type="password" id="reset-new-password" placeholder="Новый пароль (мин. 6)" class="auth-input" style="margin-top:12px">
+<div id="reset-error" style="color:var(--danger);font-size:13px;min-height:18px"></div>
+<button onclick="verifyResetCode()" class="auth-btn primary">Сбросить пароль</button>
+</div>
 </div>
 </div>
 </div>
@@ -285,16 +390,17 @@ onkeydown="handleInputKeydown(event)" oninput="handleInputChange()"></textarea>
 </div>
 </div>
 
-<script src="/static/js/modules/api.js"></script>
-<script src="/static/js/modules/auth.js"></script>
-<script src="/static/js/modules/websocket.js"></script>
-<script src="/static/js/modules/chats.js"></script>
-<script src="/static/js/modules/messages.js"></script>
-<script src="/static/js/modules/channels.js"></script>
-<script src="/static/js/modules/profile.js"></script>
-<script src="/static/js/modules/media.js"></script>
-<script src="/static/js/modules/ui.js"></script>
-<script src="/static/js/modules/calls.js"></script>
-<script src="/static/js/app.js"></script>
-<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a0ccdf424d835010',t:'MTc4MTY0NDk2OQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script src="/static/js/modules/api.js?v=7"></script>
+<script src="/static/js/modules/auth.js?v=7"></script>
+<script src="/static/js/modules/websocket.js?v=7"></script>
+<script src="/static/js/modules/chats.js?v=7"></script>
+<script src="/static/js/modules/messages.js?v=7"></script>
+<script src="/static/js/modules/channels.js?v=7"></script>
+<script src="/static/js/modules/members.js?v=7"></script>
+<script src="/static/js/modules/profile.js?v=7"></script>
+<script src="/static/js/modules/media.js?v=7"></script>
+<script src="/static/js/modules/ui.js?v=7"></script>
+<script src="/static/js/modules/calls.js?v=7"></script>
+<script src="/static/js/app.js?v=7"></script>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a11ca3067b0ca031',t:'MTc4MjQ4MTM2Mg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>

@@ -16,6 +16,9 @@ class Chat(Base):
     # use channel_id instead (one common chat per channel).
     post_id = Column(Integer, ForeignKey("channel_posts.id"), nullable=True, unique=True)
     channel_id = Column(Integer, ForeignKey("channels.id"), nullable=True, unique=True)
+    is_public = Column(Boolean, default=False)
+    username = Column(String(64), unique=True, nullable=True)
+    slow_mode_seconds = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     members = relationship("ChatMember", back_populates="chat")
     messages = relationship("Message", back_populates="chat")
@@ -26,6 +29,9 @@ class ChatMember(Base):
     chat_id = Column(Integer, ForeignKey("chats.id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     is_admin = Column(Boolean, default=False)
+    role = Column(String(20), default="member")  # owner | admin | member
+    permissions = Column(String(255), nullable=True)  # CSV of granted admin permissions; NULL = default set
+    muted_until = Column(DateTime, nullable=True)
     joined_at = Column(DateTime, default=datetime.utcnow)
     last_read_message_id = Column(Integer, nullable=True)
     chat = relationship("Chat", back_populates="members")

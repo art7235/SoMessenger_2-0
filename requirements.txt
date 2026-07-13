@@ -11,3 +11,4 @@ email-validator
 aiofiles
 Pillow
 websockets
+firebase-admin

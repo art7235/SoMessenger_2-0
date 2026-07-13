@@ -1,57 +1,115 @@
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from app.models.message import Message
 from app.models.reaction import Reaction
+from app.models.message_deletion import MessageDeletion
+from app.models.user import User
 from app.core.encryption import encrypt_text
-from typing import Optional, List
+
+from app.services.notification_service import send_push_notification
 
 class MessageService:
     @staticmethod
     async def create_message(db, chat_id, sender_id, content=None, msg_type="text",
-            file_url=None, file_name=None, file_size=None, reply_to_id=None, duration=None):
-        msg = Message(chat_id=chat_id, sender_id=sender_id, content=encrypt_text(content), message_type=msg_type,
-            file_url=file_url, file_name=file_name, file_size=file_size, reply_to_id=reply_to_id,
-            duration=int(duration) if duration is not None else None)
+            file_url=None, file_name=None, file_size=None, reply_to_id=None, forward_from_id=None, duration=None):
+        msg = Message(
+            chat_id=chat_id,
+            sender_id=sender_id,
+            content=encrypt_text(content) if content else None,
+            message_type=msg_type,
+            file_url=file_url,
+            file_name=file_name,
+            file_size=file_size,
+            reply_to_id=reply_to_id,
+            forward_from_id=forward_from_id,
+            duration=int(duration) if duration is not None else None,
+        )
         db.add(msg); await db.commit(); await db.refresh(msg)
         r = await db.execute(select(Message).where(Message.id==msg.id)
-            .options(selectinload(Message.sender)).options(selectinload(Message.reactions))
-            .options(selectinload(Message.reply_to).selectinload(Message.sender)))
-        return r.scalar_one()
+            .options(selectinload(Message.sender))
+            .options(selectinload(Message.reactions))
+            .options(selectinload(Message.reply_to).selectinload(Message.sender))
+            .options(selectinload(Message.forward_from).selectinload(Message.sender)))
+        msg = r.scalar_one()
+
+        # Try sending push notifications to members
+        try:
+            from app.models.chat import ChatMember
+            members = (await db.execute(select(User).join(ChatMember).where(ChatMember.chat_id==chat_id, User.id != sender_id))).scalars().all()
+            for m in members:
+                if m.fcm_token:
+                    text_content = content if msg_type == 'text' else "Медиа-сообщение"
+                    await send_push_notification(
+                        m.fcm_token, 
+                        f"Сообщение от {msg.sender.display_name}", 
+                        text_content,
+                        {"chat_id": str(chat_id), "type": "new_message"}
+                    )
+        except Exception as e:
+            print(f"⚠️ Push broadcast error: {e}")
+
+        return msg
+
     @staticmethod
-    async def get_chat_messages(db, chat_id, limit=50, offset=0, reply_to_id=None):
+    async def get_chat_messages(db, chat_id, limit=50, offset=0, reply_to_id=None, viewer_id=None):
         filters = [Message.chat_id==chat_id, Message.is_deleted==False]
         if reply_to_id is not None:
             filters.append(Message.reply_to_id==reply_to_id)
+        if viewer_id is not None:
+            hidden = select(MessageDeletion.message_id).where(MessageDeletion.user_id==viewer_id)
+            filters.append(Message.id.notin_(hidden))
         r = await db.execute(select(Message).where(*filters)
-            .options(selectinload(Message.sender)).options(selectinload(Message.reactions))
+            .options(selectinload(Message.sender))
+            .options(selectinload(Message.reactions))
             .options(selectinload(Message.reply_to).selectinload(Message.sender))
+            .options(selectinload(Message.forward_from).selectinload(Message.sender))
             .order_by(Message.created_at.desc()).limit(limit).offset(offset))
-        # DB returns newest-first for correct pagination; UI renders oldest -> newest.
         return list(reversed(r.scalars().all()))
+
     @staticmethod
     async def add_reaction(db, message_id, user_id, emoji):
         existing = await db.execute(select(Reaction).where(Reaction.message_id==message_id, Reaction.user_id==user_id, Reaction.emoji==emoji))
         r = existing.scalar_one_or_none()
-        if r: await db.delete(r); await db.commit(); return None
+        if r:
+            await db.delete(r); await db.commit()
+            return None, emoji
         old = (await db.execute(select(Reaction).where(Reaction.message_id==message_id, Reaction.user_id==user_id))).scalar_one_or_none()
+        removed = old.emoji if old else None
         if old: await db.delete(old)
-        r = Reaction(message_id=message_id, user_id=user_id, emoji=emoji)
-        db.add(r); await db.commit(); await db.refresh(r); return r
+        new_r = Reaction(message_id=message_id, user_id=user_id, emoji=emoji)
+        db.add(new_r); await db.commit(); await db.refresh(new_r)
+        return new_r, removed
+
     @staticmethod
     async def add_post_reaction(db, post_id, user_id, emoji):
         existing = await db.execute(select(Reaction).where(Reaction.channel_post_id==post_id, Reaction.user_id==user_id, Reaction.emoji==emoji))
         r = existing.scalar_one_or_none()
-        if r: await db.delete(r); await db.commit(); return None
+        if r:
+            await db.delete(r); await db.commit()
+            return None, emoji
         old = (await db.execute(select(Reaction).where(Reaction.channel_post_id==post_id, Reaction.user_id==user_id))).scalar_one_or_none()
+        removed = old.emoji if old else None
         if old: await db.delete(old)
-        r = Reaction(channel_post_id=post_id, user_id=user_id, emoji=emoji)
-        db.add(r); await db.commit(); await db.refresh(r); return r
+        new_r = Reaction(channel_post_id=post_id, user_id=user_id, emoji=emoji)
+        db.add(new_r); await db.commit(); await db.refresh(new_r)
+        return new_r, removed
+
     @staticmethod
-    async def delete_message(db, message_id, user_id):
+    async def delete_message(db, message_id, user_id, for_everyone=True):
         msg = (await db.execute(select(Message).where(Message.id==message_id))).scalar_one_or_none()
-        if msg and msg.sender_id==user_id: msg.is_deleted=True; await db.commit(); return True
-        return False
+        if not msg: return False
+        if for_everyone:
+            if msg.sender_id != user_id: return False
+            msg.is_deleted = True
+            await db.commit()
+            return True
+        existing = (await db.execute(select(MessageDeletion).where(
+            MessageDeletion.message_id==message_id, MessageDeletion.user_id==user_id))).scalar_one_or_none()
+        if not existing:
+            db.add(MessageDeletion(message_id=message_id, user_id=user_id))
+            await db.commit()
+        return True
+
     @staticmethod
     async def edit_message(db, message_id, user_id, new_content):
         from datetime import datetime
