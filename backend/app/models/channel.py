@@ -22,6 +22,9 @@ class ChannelSubscriber(Base):
     id = Column(Integer, primary_key=True, index=True)
     channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    role = Column(String(20), default="subscriber")  # owner | admin | subscriber
+    permissions = Column(String(255), nullable=True)  # CSV of granted admin permissions; NULL = default set
+    muted_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     channel = relationship("Channel", back_populates="subscribers")
     user = relationship("User")

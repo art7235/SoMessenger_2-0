@@ -1,4 +1,4 @@
-window.currentChatId=null;window.currentOtherUserId=null;window.currentChatMembers=[];window.currentCommentsPostId=null;window.currentCommentsRootId=null
+window.currentChatId=null;window.currentOtherUserId=null;window.currentChatMembers=[];window.currentCommentsPostId=null;window.currentCommentsRootId=null;window.currentChatReadMap={}
 let chatsList=[],searchTimeout=null
 
 function debouncedSearch(q){clearTimeout(searchTimeout);searchTimeout=setTimeout(()=>searchUsers(q),300)}
@@ -49,7 +49,9 @@ else openChat(chat)})
 return div}
 
 async function openChat(chat){
+resetTypingIndicator()
 window.currentChatId=chat.id;window.currentOtherUserId=chat.other_user_id||null;window.currentCommentsPostId=null;window.currentCommentsRootId=null
+window.currentChatReadMap=chat.read_map||{}
 if(typeof currentChannelId!=='undefined')currentChannelId=null
 if(typeof window.currentChannelId!=='undefined')window.currentChannelId=null
 showChatUI(chat.name,chat.avatar_url,chat.is_group,chat.other_user_online,chat.is_discussion)
@@ -65,7 +67,9 @@ clearUnreadBadge(chat.id)
 markChatReadIfNeeded()}
 
 async function openCommentsChat(chat){
+resetTypingIndicator()
 window.currentChatId=chat.id;window.currentOtherUserId=null;window.currentCommentsPostId=chat.comment_post_id||chat._commentPostId||chat.post_id||null;window.currentCommentsRootId=chat.root_message_id||chat._commentRootId||null
+window.currentChatReadMap={}
 if(typeof currentChannelId!=='undefined')currentChannelId=null
 if(typeof window.currentChannelId!=='undefined')window.currentChannelId=null
 document.getElementById('input-area').style.display='flex';document.getElementById('join-bar').style.display='none'
@@ -90,13 +94,15 @@ document.getElementById('chat-title').textContent=name
 document.getElementById('chat-avatar').src=avatar||''
 const dot=document.getElementById('chat-online-dot');const st=document.getElementById('chat-status')
 if(isDiscussion){dot.style.display='none';st.textContent='Общий чат канала'}
-else if(isGroup||!isOnline){dot.style.display='none';st.textContent=isGroup?'Группа':'был(а) недавно'}
+else if(isGroup||!isOnline){dot.style.display='none';st.textContent=isGroup?'Группа':'был недавно'}
 else{dot.style.display='block';st.textContent='в сети'}
 document.getElementById('call-btn').style.display='';document.getElementById('vcall-btn').style.display=''
 document.getElementById('channel-menu-btn').style.display='none'}
 
 function closeChat(){
+resetTypingIndicator()
 window.currentChatId=null;window.currentOtherUserId=null;window.currentCommentsPostId=null;window.currentCommentsRootId=null
+window.currentChatReadMap={}
 lastReadChatId=null
 document.getElementById('active-chat').style.display='none';document.getElementById('welcome-screen').style.display='flex'
 if(window.innerWidth<=768)document.getElementById('sidebar').classList.remove('hidden')}

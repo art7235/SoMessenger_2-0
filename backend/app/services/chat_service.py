@@ -28,10 +28,10 @@ class ChatService:
     async def create_group_chat(db, name, creator_id, member_ids):
         chat = Chat(name=name, is_group=True, created_by=creator_id)
         db.add(chat); await db.flush()
-        db.add(ChatMember(chat_id=chat.id, user_id=creator_id, is_admin=True))
+        db.add(ChatMember(chat_id=chat.id, user_id=creator_id, is_admin=True, role="owner"))
         for uid in member_ids:
             if uid != creator_id:
-                db.add(ChatMember(chat_id=chat.id, user_id=uid))
+                db.add(ChatMember(chat_id=chat.id, user_id=uid, role="member"))
         await db.commit(); await db.refresh(chat)
         for uid in member_ids:
             if uid != creator_id:
@@ -39,15 +39,21 @@ class ChatService:
         return chat
 
     @staticmethod
-    async def ensure_chat_member(db, chat_id: int, user_id: int, is_admin: bool = False):
+    async def ensure_chat_member(db, chat_id: int, user_id: int, is_admin: bool = False, role: str = None):
         r = await db.execute(select(ChatMember).where(and_(ChatMember.chat_id==chat_id, ChatMember.user_id==user_id)))
         member = r.scalar_one_or_none()
+        resolved_role = role or ("admin" if is_admin else "member")
         if not member:
-            db.add(ChatMember(chat_id=chat_id, user_id=user_id, is_admin=is_admin))
+            db.add(ChatMember(chat_id=chat_id, user_id=user_id, is_admin=is_admin, role=resolved_role))
             await db.flush()
-        elif is_admin and not member.is_admin:
-            member.is_admin = True
-            await db.flush()
+        else:
+            changed = False
+            if is_admin and not member.is_admin:
+                member.is_admin = True; changed = True
+            if role and member.role != role:
+                member.role = role; changed = True
+            if changed:
+                await db.flush()
         return member
 
     @staticmethod
@@ -75,9 +81,10 @@ class ChatService:
             db.add(chat); await db.flush()
 
         # The channel owner is always an admin in the discussion chat.
-        await ChatService.ensure_chat_member(db, chat.id, channel.owner_id, is_admin=True)
+        await ChatService.ensure_chat_member(db, chat.id, channel.owner_id, is_admin=True, role="owner")
         if user_id:
-            await ChatService.ensure_chat_member(db, chat.id, user_id, is_admin=(user_id == channel.owner_id))
+            await ChatService.ensure_chat_member(db, chat.id, user_id, is_admin=(user_id == channel.owner_id),
+                role=("owner" if user_id == channel.owner_id else None))
         await db.flush()
         return chat
 

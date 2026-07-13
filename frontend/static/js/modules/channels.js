@@ -26,7 +26,7 @@ document.getElementById('channel-menu-btn').style.display=''
 await loadChannelPosts(channelId)
 }catch(e){showToast('Ошибка загрузки канала')}}
 
-function showChannelMenu(){showToast('Настройки канала — в разработке 🚧')}
+function showChannelMenu(){showChatInfo()}
 
 async function toggleSubscription(){
 if(!currentChannelId)return

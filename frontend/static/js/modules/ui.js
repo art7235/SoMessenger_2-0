@@ -7,20 +7,6 @@ function hideMenu(){document.getElementById('sidebar-menu').style.display='none'
 document.getElementById('chats-list')?.addEventListener('scroll',hideMenu,{passive:true})
 document.addEventListener('click',(e)=>{const m=document.getElementById('sidebar-menu');if(m&&!m.contains(e.target)&&!e.target.closest('[onclick*="showMenu"]'))m.style.display='none';const am=document.getElementById('attach-menu');if(am&&am.style.display==='block'&&!am.contains(e.target)&&!e.target.closest('.attach-btn'))am.style.display='none'})
 
-async function showChatInfo(){
-let data,type,isOwner=false
-if(window.currentChatId){const chat=chatsList.find(c=>c.id===window.currentChatId&&!c._isChannel&&!c.is_comments);if(!chat)return;data=chat;type='chat';isOwner=chat.is_group}
-else if(currentChannelId){data=await api.getChannel(currentChannelId);type='channel';isOwner=data.is_owner}
-else return
-document.getElementById('info-title').textContent=type==='chat'?'Информация':'Информация о канале'
-document.getElementById('info-name').textContent=data.name;document.getElementById('info-desc').textContent=data.description||''
-const av=document.getElementById('info-avatar');av.src=data.avatar_url||''
-document.getElementById('info-avatar-edit').style.display=isOwner?'flex':'none'
-document.getElementById('info-extra').textContent=type==='channel'?`${data.subscribers_count} подписчиков`:type==='chat'&&data.is_group?'Группа':''
-showModal('modal-info')}
-
-async function uploadInfoAvatar(input){const file=input.files[0];if(!file)return;const fd=new FormData();fd.append('file',file);try{let res;if(window.currentChatId)res=await api.uploadChatAvatar(window.currentChatId,fd);else if(currentChannelId)res=await api.uploadChannelAvatar(currentChannelId,fd);document.getElementById('info-avatar').src=res.avatar_url;showToast('Аватар обновлен');loadChats()}catch(e){showToast(e.message)}}
-
 let groupMembers=[]
 function showGroupModal(){hideMenu();document.getElementById('group-name').value='';document.getElementById('group-search').value='';document.getElementById('group-search-results').innerHTML='';groupMembers=[];renderGroupMembers();showModal('modal-group')}
 function renderGroupMembers(){document.getElementById('group-members-list').innerHTML=groupMembers.map(m=>`<span class="member-tag">${escapeHtml(m.display_name)} <button onclick="removeGroupMember(${m.id})">✕</button></span>`).join('')}

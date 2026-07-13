@@ -9,11 +9,13 @@ from app.models.message import Message
 from app.models.channel import Channel, ChannelPost, ChannelSubscriber
 from app.services.chat_service import ChatService
 from app.services.message_service import MessageService
+from app.services.membership_service import MembershipService, InviteError, ROLE_RANK, ALL_PERMISSIONS
 from app.api.routes.users import get_current_user
 from app.websocket.manager import manager
 from app.core.config import settings
 from app.core.encryption import decrypt_text
 from typing import Optional
+from datetime import datetime, timedelta
 import aiofiles, os, uuid
 
 router = APIRouter(prefix="/chats", tags=["chats"])
@@ -80,11 +82,15 @@ async def get_my_chats(u: User = Depends(get_current_user), db: AsyncSession = D
             if vis:
                 m2 = sorted(vis, key=lambda x: x.created_at)[-1]
                 lm = {"content":decrypt_text(m2.content),"message_type":m2.message_type,"created_at":m2.created_at.isoformat()+"Z"}
+        my_member = next((m for m in chat.members if m.user_id==u.id), None)
+        read_map = {str(m.user_id): m.last_read_message_id for m in chat.members if m.user_id != u.id}
         result.append({"id":chat.id,"name":cn,"avatar_url":ca,"is_group":chat.is_group,
             "is_comments":False,"is_discussion":is_discussion,"channel_id":channel_id,
             "post_id":chat.post_id,"last_message":lm,"other_user_id":ou.id if ou else None,
             "other_user_online":ou.is_online if ou else None,"created_at":chat.created_at.isoformat()+"Z",
-            "unread_count":getattr(chat,"unread_count",0)})
+            "unread_count":getattr(chat,"unread_count",0),"my_role":my_member.role if my_member else None,
+            "is_public":chat.is_public,"username":chat.username,"slow_mode_seconds":chat.slow_mode_seconds or 0,
+            "read_map":read_map})
     return result
 
 @router.get("/{chat_id}/messages")
@@ -97,13 +103,17 @@ async def get_messages(chat_id: int, limit: int=50, offset: int=0, comment_post_
             Message.channel_post_id==comment_post_id, Message.is_deleted==False)))).scalar_one_or_none()
         if not root: return []
         reply_to_id = root.id
-    msgs = await MessageService.get_chat_messages(db, chat_id, limit, offset, reply_to_id=reply_to_id)
+    msgs = await MessageService.get_chat_messages(db, chat_id, limit, offset, reply_to_id=reply_to_id, viewer_id=u.id)
     return [_fmt(m) for m in msgs]
 
 @router.post("/{chat_id}/messages")
 async def send_message(chat_id: int, data: dict,
         u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     if not await ChatService.is_chat_member(db, chat_id, u.id): raise HTTPException(403,"Нет доступа")
+    if await MembershipService.is_muted(db, "chat", chat_id, u.id): raise HTTPException(403,"Вы в муте в этом чате")
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    wait = await _slow_mode_wait(db, chat, u.id) if chat else 0
+    if wait: raise HTTPException(429, f"Медленный режим: подождите ещё {wait} сек")
     fu = data.get("file_url") or (data.get("content") if data.get("message_type")=="sticker" else None)
     msg = await MessageService.create_message(db, chat_id, u.id, content=data.get("content"),
         msg_type=data.get("message_type","text"), reply_to_id=data.get("reply_to_id"),
@@ -118,6 +128,10 @@ async def send_message(chat_id: int, data: dict,
 async def upload_file(chat_id: int, file: UploadFile=File(...), reply_to_id: Optional[int]=None, duration: Optional[float]=None,
         u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     if not await ChatService.is_chat_member(db, chat_id, u.id): raise HTTPException(403,"Нет доступа")
+    if await MembershipService.is_muted(db, "chat", chat_id, u.id): raise HTTPException(403,"Вы в муте в этом чате")
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    wait = await _slow_mode_wait(db, chat, u.id) if chat else 0
+    if wait: raise HTTPException(429, f"Медленный режим: подождите ещё {wait} сек")
     ct = file.content_type or ""
     if ct.startswith("image/"): mt,fl = "image","media"
     elif ct.startswith("video/"): mt,fl = "video","media"
@@ -175,13 +189,16 @@ async def react_to_message(chat_id: int, message_id: int, data: dict,
     return {"status":"ok"}
 
 @router.delete("/{chat_id}/messages/{message_id}")
-async def delete_message(chat_id: int, message_id: int,
+async def delete_message(chat_id: int, message_id: int, for_everyone: bool = True,
         u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    ok = await MessageService.delete_message(db, message_id, u.id)
+    if not await ChatService.is_chat_member(db, chat_id, u.id): raise HTTPException(403,"Нет доступа")
+    ok = await MessageService.delete_message(db, message_id, u.id, for_everyone=for_everyone)
     if not ok: raise HTTPException(403,"Нельзя удалить")
-    mids = await ChatService.get_chat_member_ids(db, chat_id)
-    await manager.broadcast_to_chat_members(mids, {"type":"message_deleted","message_id":message_id,"chat_id":chat_id})
-    return {"status":"deleted"}
+    if for_everyone:
+        mids = await ChatService.get_chat_member_ids(db, chat_id)
+        await manager.broadcast_to_chat_members(mids, {"type":"message_deleted","message_id":message_id,"chat_id":chat_id})
+        return {"status":"deleted"}
+    return {"status":"hidden"}
 
 @router.put("/{chat_id}/messages/{message_id}")
 async def edit_message(chat_id: int, message_id: int, data: dict,
@@ -215,6 +232,270 @@ async def create_group(data: dict, u: User = Depends(get_current_user), db: Asyn
     chat = await ChatService.create_group_chat(db, data["name"], u.id, data["member_ids"])
     return {"chat_id":chat.id,"name":chat.name}
 
+def _require_group(chat):
+    if not chat or not chat.is_group:
+        raise HTTPException(400, "Действие доступно только для групп")
+
+async def _slow_mode_wait(db, chat, user_id):
+    if not chat.slow_mode_seconds:
+        return 0
+    role = await MembershipService.get_role(db, "chat", chat.id, user_id)
+    if role in ("owner", "admin"):
+        return 0
+    last = (await db.execute(select(Message).where(and_(Message.chat_id==chat.id, Message.sender_id==user_id,
+        Message.is_deleted==False)).order_by(Message.created_at.desc()).limit(1))).scalar_one_or_none()
+    if not last:
+        return 0
+    elapsed = (datetime.utcnow() - last.created_at).total_seconds()
+    remaining = chat.slow_mode_seconds - elapsed
+    return max(0, int(remaining) + 1) if remaining > 0 else 0
+
+@router.get("/{chat_id}/members")
+async def get_chat_members(chat_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if not await ChatService.is_chat_member(db, chat_id, u.id): raise HTTPException(403,"Нет доступа")
+    return await MembershipService.list_members(db, "chat", chat_id)
+
+@router.get("/{chat_id}/admins")
+async def get_chat_admins(chat_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if not await ChatService.is_chat_member(db, chat_id, u.id): raise HTTPException(403,"Нет доступа")
+    return await MembershipService.list_admins(db, "chat", chat_id)
+
+@router.post("/{chat_id}/members")
+async def add_chat_members(chat_id: int, data: dict, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    if not await MembershipService.has_permission(db, "chat", chat_id, u.id, "invite"): raise HTTPException(403,"Нет прав")
+    user_ids = data.get("user_ids") or ([data["user_id"]] if data.get("user_id") else [])
+    added = []
+    for uid in user_ids:
+        if await MembershipService.is_banned(db, "chat", chat_id, uid): continue
+        await ChatService.ensure_chat_member(db, chat_id, uid)
+        added.append(uid)
+    await db.commit()
+    if added:
+        mids = await ChatService.get_chat_member_ids(db, chat_id)
+        await manager.broadcast_to_chat_members(mids, {"type":"chat_updated","chat_id":chat_id})
+        for uid in added:
+            await manager.send_to_user(uid, {"type":"new_chat","chat_id":chat_id,"name":chat.name})
+    return {"status":"ok","added":added}
+
+@router.delete("/{chat_id}/members/{user_id}")
+async def remove_chat_member(chat_id: int, user_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    actor_role = await MembershipService.get_role(db, "chat", chat_id, u.id)
+    target_role = await MembershipService.get_role(db, "chat", chat_id, user_id)
+    if not await MembershipService.has_permission(db, "chat", chat_id, u.id, "ban") or \
+            ROLE_RANK.get(actor_role,0) <= ROLE_RANK.get(target_role or "member",0):
+        raise HTTPException(403,"Нет прав")
+    await MembershipService.remove_member(db, "chat", chat_id, user_id, actor_id=u.id)
+    mids = await ChatService.get_chat_member_ids(db, chat_id)
+    await manager.broadcast_to_chat_members(mids, {"type":"member_kicked","chat_id":chat_id,"user_id":user_id})
+    await manager.send_to_user(user_id, {"type":"removed_from_chat","chat_id":chat_id})
+    return {"status":"ok"}
+
+@router.post("/{chat_id}/members/{user_id}/ban")
+async def ban_chat_member(chat_id: int, user_id: int, data: Optional[dict] = None,
+        u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    actor_role = await MembershipService.get_role(db, "chat", chat_id, u.id)
+    target_role = await MembershipService.get_role(db, "chat", chat_id, user_id)
+    if not await MembershipService.has_permission(db, "chat", chat_id, u.id, "ban") or \
+            ROLE_RANK.get(actor_role,0) <= ROLE_RANK.get(target_role or "member",0):
+        raise HTTPException(403,"Нет прав")
+    await MembershipService.ban_member(db, "chat", chat_id, user_id, u.id, (data or {}).get("reason"))
+    mids = await ChatService.get_chat_member_ids(db, chat_id)
+    await manager.broadcast_to_chat_members(mids, {"type":"member_banned","chat_id":chat_id,"user_id":user_id})
+    await manager.send_to_user(user_id, {"type":"removed_from_chat","chat_id":chat_id,"banned":True})
+    return {"status":"ok"}
+
+@router.delete("/{chat_id}/members/{user_id}/ban")
+async def unban_chat_member(chat_id: int, user_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    if not await MembershipService.has_permission(db, "chat", chat_id, u.id, "ban"): raise HTTPException(403,"Нет прав")
+    await MembershipService.unban_member(db, "chat", chat_id, user_id, actor_id=u.id)
+    return {"status":"ok"}
+
+@router.get("/{chat_id}/bans")
+async def get_chat_bans(chat_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    actor_role = await MembershipService.get_role(db, "chat", chat_id, u.id)
+    if actor_role not in ("owner","admin"): raise HTTPException(403,"Нет прав")
+    return await MembershipService.list_bans(db, "chat", chat_id)
+
+@router.post("/{chat_id}/members/{user_id}/mute")
+async def mute_chat_member(chat_id: int, user_id: int, data: dict, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    actor_role = await MembershipService.get_role(db, "chat", chat_id, u.id)
+    target_role = await MembershipService.get_role(db, "chat", chat_id, user_id)
+    if not await MembershipService.has_permission(db, "chat", chat_id, u.id, "mute") or \
+            ROLE_RANK.get(actor_role,0) <= ROLE_RANK.get(target_role or "member",0):
+        raise HTTPException(403,"Нет прав")
+    minutes = data.get("minutes")
+    until = datetime.utcnow() + timedelta(minutes=minutes) if minutes else datetime.utcnow() + timedelta(days=3650)
+    await MembershipService.mute_member(db, "chat", chat_id, user_id, until, actor_id=u.id)
+    mids = await ChatService.get_chat_member_ids(db, chat_id)
+    await manager.broadcast_to_chat_members(mids, {"type":"member_muted","chat_id":chat_id,"user_id":user_id,"muted_until":until.isoformat()+"Z"})
+    return {"status":"ok","muted_until":until.isoformat()+"Z"}
+
+@router.delete("/{chat_id}/members/{user_id}/mute")
+async def unmute_chat_member(chat_id: int, user_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    if not await MembershipService.has_permission(db, "chat", chat_id, u.id, "mute"): raise HTTPException(403,"Нет прав")
+    await MembershipService.unmute_member(db, "chat", chat_id, user_id, actor_id=u.id)
+    mids = await ChatService.get_chat_member_ids(db, chat_id)
+    await manager.broadcast_to_chat_members(mids, {"type":"member_unmuted","chat_id":chat_id,"user_id":user_id})
+    return {"status":"ok"}
+
+@router.put("/{chat_id}/members/{user_id}/role")
+async def set_chat_member_role(chat_id: int, user_id: int, data: dict, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    actor_role = await MembershipService.get_role(db, "chat", chat_id, u.id)
+    new_role = data.get("role")
+    if new_role not in ("admin","member"): raise HTTPException(400,"Некорректная роль")
+    target_role = await MembershipService.get_role(db, "chat", chat_id, user_id)
+    if target_role == "owner": raise HTTPException(400,"Нельзя изменить роль владельца")
+    if actor_role != "owner":
+        can_add_admins = await MembershipService.has_permission(db, "chat", chat_id, u.id, "add_admins")
+        if not (can_add_admins and new_role == "admin" and target_role in (None, "member")):
+            raise HTTPException(403,"Нет прав")
+    ok = await MembershipService.set_role(db, "chat", chat_id, user_id, new_role, actor_id=u.id)
+    if not ok: raise HTTPException(404,"Участник не найден")
+    mids = await ChatService.get_chat_member_ids(db, chat_id)
+    await manager.broadcast_to_chat_members(mids, {"type":"role_changed","chat_id":chat_id,"user_id":user_id,"role":new_role})
+    return {"status":"ok"}
+
+@router.put("/{chat_id}/members/{user_id}/permissions")
+async def set_chat_member_permissions(chat_id: int, user_id: int, data: dict,
+        u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    actor_role = await MembershipService.get_role(db, "chat", chat_id, u.id)
+    if actor_role != "owner": raise HTTPException(403,"Только владелец может настраивать права админов")
+    perms = set(data.get("permissions") or [])
+    ok = await MembershipService.set_permissions(db, "chat", chat_id, user_id, perms)
+    if not ok: raise HTTPException(400,"Пользователь не является админом")
+    await MembershipService.log_action(db, "chat", chat_id, u.id, "permissions_update",
+        target_user_id=user_id, details=",".join(sorted(perms & ALL_PERMISSIONS)))
+    await manager.send_to_user(user_id, {"type":"permissions_changed","chat_id":chat_id})
+    return {"status":"ok"}
+
+@router.put("/{chat_id}")
+async def update_chat(chat_id: int, data: dict, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    if not await MembershipService.has_permission(db, "chat", chat_id, u.id, "change_info"): raise HTTPException(403,"Нет прав")
+    if "name" in data: chat.name = data["name"]
+    if "description" in data: chat.description = data["description"]
+    await db.commit()
+    await MembershipService.log_action(db, "chat", chat_id, u.id, "info_update")
+    mids = await ChatService.get_chat_member_ids(db, chat_id)
+    await manager.broadcast_to_chat_members(mids, {"type":"chat_updated","chat_id":chat_id,"name":chat.name,"description":chat.description})
+    return {"status":"ok"}
+
+@router.put("/{chat_id}/privacy")
+async def update_chat_privacy(chat_id: int, data: dict, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    actor_role = await MembershipService.get_role(db, "chat", chat_id, u.id)
+    if actor_role != "owner": raise HTTPException(403,"Только владелец может менять приватность")
+    if "username" in data:
+        username = (data["username"] or "").strip().lstrip("@") or None
+        if username:
+            existing = (await db.execute(select(Chat).where(and_(Chat.username==username, Chat.id!=chat_id)))).scalar_one_or_none()
+            if existing: raise HTTPException(400,"Username уже занят")
+        chat.username = username
+    if "is_public" in data:
+        chat.is_public = bool(data["is_public"])
+    await db.commit()
+    await MembershipService.log_action(db, "chat", chat_id, u.id, "privacy_update")
+    return {"status":"ok","username":chat.username,"is_public":chat.is_public}
+
+@router.put("/{chat_id}/slow-mode")
+async def update_slow_mode(chat_id: int, data: dict, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    actor_role = await MembershipService.get_role(db, "chat", chat_id, u.id)
+    if actor_role != "owner": raise HTTPException(403,"Только владелец может менять медленный режим")
+    seconds = int(data.get("seconds") or 0)
+    if seconds < 0: raise HTTPException(400,"Некорректное значение")
+    chat.slow_mode_seconds = seconds
+    await db.commit()
+    await MembershipService.log_action(db, "chat", chat_id, u.id, "slow_mode_update", details=str(seconds))
+    mids = await ChatService.get_chat_member_ids(db, chat_id)
+    await manager.broadcast_to_chat_members(mids, {"type":"chat_updated","chat_id":chat_id,"slow_mode_seconds":seconds})
+    return {"status":"ok","slow_mode_seconds":seconds}
+
+@router.post("/{chat_id}/invite-links")
+async def create_chat_invite(chat_id: int, data: Optional[dict] = None, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    if not await MembershipService.has_permission(db, "chat", chat_id, u.id, "invite"): raise HTTPException(403,"Нет прав")
+    data = data or {}
+    expires_at = datetime.utcnow() + timedelta(hours=data["expires_in_hours"]) if data.get("expires_in_hours") else None
+    link = await MembershipService.create_invite_link(db, "chat", chat_id, u.id, expires_at, data.get("max_uses"))
+    await MembershipService.log_action(db, "chat", chat_id, u.id, "invite_created")
+    return MembershipService.format_invite(link)
+
+@router.get("/{chat_id}/invite-links")
+async def list_chat_invites(chat_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    if not await ChatService.is_chat_member(db, chat_id, u.id): raise HTTPException(403,"Нет доступа")
+    links = await MembershipService.list_invite_links(db, "chat", chat_id)
+    return [MembershipService.format_invite(l) for l in links]
+
+@router.delete("/{chat_id}/invite-links/{link_id}")
+async def revoke_chat_invite(chat_id: int, link_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    if not await MembershipService.has_permission(db, "chat", chat_id, u.id, "invite"): raise HTTPException(403,"Нет прав")
+    ok = await MembershipService.revoke_invite_link(db, "chat", chat_id, link_id)
+    if not ok: raise HTTPException(404,"Ссылка не найдена")
+    await MembershipService.log_action(db, "chat", chat_id, u.id, "invite_revoked")
+    return {"status":"ok"}
+
+@router.get("/{chat_id}/audit-log")
+async def get_chat_audit_log(chat_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    actor_role = await MembershipService.get_role(db, "chat", chat_id, u.id)
+    if actor_role not in ("owner","admin"): raise HTTPException(403,"Нет прав")
+    return await MembershipService.list_audit_log(db, "chat", chat_id)
+
+@router.post("/join/{code}")
+async def join_by_code(code: str, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    try:
+        result = await MembershipService.resolve_and_join(db, code, u.id)
+    except InviteError as e:
+        raise HTTPException(e.status_code, e.message)
+    if result["kind"] == "chat":
+        await manager.send_to_user(u.id, {"type":"new_chat","chat_id":result["id"],"name":result["name"]})
+    return result
+
+@router.post("/{chat_id}/leave")
+async def leave_chat(chat_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    chat = (await db.execute(select(Chat).where(Chat.id==chat_id))).scalar_one_or_none()
+    _require_group(chat)
+    role = await MembershipService.get_role(db, "chat", chat_id, u.id)
+    if not role: raise HTTPException(403,"Вы не участник этой группы")
+    if role == "owner":
+        members = await MembershipService.list_members(db, "chat", chat_id)
+        others = [m for m in members if m["user_id"] != u.id]
+        if others:
+            successor = next((m for m in others if m["role"]=="admin"), others[0])
+            await MembershipService.set_role(db, "chat", chat_id, successor["user_id"], "owner")
+    mids = await ChatService.get_chat_member_ids(db, chat_id)
+    await MembershipService.remove_member(db, "chat", chat_id, u.id)
+    await manager.broadcast_to_chat_members(mids, {"type":"member_kicked","chat_id":chat_id,"user_id":u.id})
+    return {"status":"ok"}
+
 @router.post("/call/notify")
 async def notify_call(data: dict, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     target_user_id = data.get("to_user_id")
@@ -231,16 +512,21 @@ async def mark_chat_as_read(chat_id: int, u: User = Depends(get_current_user), d
         .order_by(Message.id.desc()).limit(1))
     last_id = latest.scalar_one_or_none() or 0
     member = (await db.execute(select(ChatMember).where(ChatMember.chat_id == chat_id, ChatMember.user_id == u.id))).scalar_one_or_none()
-    if member:
+    if member and member.last_read_message_id != last_id:
         member.last_read_message_id = last_id
         await db.commit()
+        mids = await ChatService.get_chat_member_ids(db, chat_id)
+        others = [m for m in mids if m != u.id]
+        if others:
+            await manager.broadcast_to_users(others, {"type":"chat_read","chat_id":chat_id,
+                "user_id":u.id,"last_read_message_id":last_id})
     return {"status":"ok", "last_read_message_id": last_id}
 
 @router.get("/{chat_id}/search")
 async def search_in_chat(chat_id: int, q: str, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     if not await ChatService.is_chat_member(db, chat_id, u.id): raise HTTPException(403, "Нет доступа")
     if not q or len(q) < 2: return []
-    msgs = await MessageService.get_chat_messages(db, chat_id, limit=200, offset=0)
+    msgs = await MessageService.get_chat_messages(db, chat_id, limit=200, offset=0, viewer_id=u.id)
     results=[]; q_lower=q.lower()
     for m in msgs:
         plain = decrypt_text(m.content) or ""

@@ -10,11 +10,13 @@ from app.models.message import Message
 from app.api.routes.users import get_current_user
 from app.services.chat_service import ChatService
 from app.services.message_service import MessageService
+from app.services.membership_service import MembershipService, InviteError, ROLE_RANK, ALL_PERMISSIONS
 from app.core.config import settings
 from app.core.encryption import encrypt_text, decrypt_text
 from app.websocket.manager import manager
 from pydantic import BaseModel
 from typing import Optional
+from datetime import datetime, timedelta
 import aiofiles, os, uuid
 
 router = APIRouter(prefix="/channels", tags=["channels"])
@@ -27,6 +29,7 @@ async def create_channel(data: dict, u: User = Depends(get_current_user), db: As
     ch = Channel(name=data["name"],description=data.get("description"),username=data.get("username"),
         is_public=data.get("is_public",True),owner_id=u.id)
     db.add(ch); await db.flush()
+    db.add(ChannelSubscriber(channel_id=ch.id, user_id=u.id, role="owner"))
     # Create the common discussion chat immediately. It will be reused for all
     # comments/posts instead of creating one chat per post.
     await ChatService.get_or_create_channel_chat(db, ch, u.id)
@@ -81,19 +84,23 @@ async def search_channels(q: str, db: AsyncSession = Depends(get_db)):
 async def get_channel(channel_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     ch = (await db.execute(select(Channel).where(Channel.id==channel_id))).scalar_one_or_none()
     if not ch: raise HTTPException(404,"Канал не найден")
+    role = await MembershipService.get_role(db, "channel", channel_id, u.id)
     return {"id":ch.id,"name":ch.name,"description":ch.description,"username":ch.username,
         "avatar_url":ch.avatar_url,"subscribers_count":ch.subscribers_count,"owner_id":ch.owner_id,
-        "is_owner":ch.owner_id==u.id}
+        "is_owner":ch.owner_id==u.id,"is_public":ch.is_public,"role":role}
 
 @router.post("/{channel_id}/subscribe")
 async def subscribe(channel_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    ch = (await db.execute(select(Channel).where(Channel.id==channel_id))).scalar_one_or_none()
+    if not ch: raise HTTPException(404,"Канал не найден")
+    if not ch.is_public: raise HTTPException(403,"Канал приватный — нужна инвайт-ссылка")
+    if await MembershipService.is_banned(db, "channel", channel_id, u.id):
+        raise HTTPException(403,"Вы заблокированы в этом канале")
     if (await db.execute(select(ChannelSubscriber).where(and_(ChannelSubscriber.channel_id==channel_id, ChannelSubscriber.user_id==u.id)))).scalar_one_or_none():
         return {"message":"Уже подписан"}
     db.add(ChannelSubscriber(channel_id=channel_id, user_id=u.id))
-    ch = (await db.execute(select(Channel).where(Channel.id==channel_id))).scalar_one_or_none()
-    if ch:
-        ch.subscribers_count+=1
-        await ChatService.get_or_create_channel_chat(db, ch, u.id)
+    ch.subscribers_count+=1
+    await ChatService.get_or_create_channel_chat(db, ch, u.id)
     await db.commit(); return {"status":"ok"}
 
 @router.post("/{channel_id}/unsubscribe")
@@ -113,7 +120,8 @@ async def unsubscribe(channel_id: int, u: User = Depends(get_current_user), db: 
 async def upload_channel_avatar(channel_id: int, file: UploadFile=File(...),
         u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     ch = (await db.execute(select(Channel).where(Channel.id==channel_id))).scalar_one_or_none()
-    if not ch or ch.owner_id!=u.id: raise HTTPException(403,"Нет прав")
+    role = await MembershipService.get_role(db, "channel", channel_id, u.id)
+    if not ch or role not in ("owner","admin"): raise HTTPException(403,"Нет прав")
     ext = os.path.splitext(file.filename)[1] if file.filename else ".jpg"
     fn = f"channel_{channel_id}_{uuid.uuid4()}{ext}"
     fp = os.path.join(settings.UPLOAD_DIR,"avatars",fn)
@@ -178,7 +186,8 @@ async def create_post(channel_id: int, data: dict,
         u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     ch = (await db.execute(select(Channel).where(Channel.id==channel_id))).scalar_one_or_none()
     if not ch: raise HTTPException(404,"Канал не найден")
-    if ch.owner_id!=u.id: raise HTTPException(403,"Нет прав")
+    role = await MembershipService.get_role(db, "channel", channel_id, u.id)
+    if role not in ("owner","admin"): raise HTTPException(403,"Нет прав")
     message_type = data.get("message_type","text")
     raw_content = data.get("content")
     file_url = data.get("file_url") or (raw_content if message_type == "sticker" else None)
@@ -202,7 +211,8 @@ async def create_post(channel_id: int, data: dict,
 async def upload_post_media(channel_id: int, post_id: int, file: UploadFile=File(...),
         u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     ch = (await db.execute(select(Channel).where(Channel.id==channel_id))).scalar_one_or_none()
-    if not ch or ch.owner_id!=u.id: raise HTTPException(403,"Нет прав")
+    role = await MembershipService.get_role(db, "channel", channel_id, u.id)
+    if not ch or role not in ("owner","admin"): raise HTTPException(403,"Нет прав")
     ct = file.content_type or ""
     if ct.startswith("image/"):
         folder, message_type = "media", "image"
@@ -262,3 +272,159 @@ async def get_comments_chat(channel_id: int, post_id: int,
     return {"chat_id":chat.id,"root_message_id":root.id,
         "post_content":decrypt_text(post.content) if post else "","post_id":post_id,
         "channel_id":channel_id,"mode":"filtered_comments"}
+
+# Member management (owner/admin/subscriber roles, bans, mutes, invite links)
+@router.get("/{channel_id}/members")
+async def get_channel_members(channel_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    role = await MembershipService.get_role(db, "channel", channel_id, u.id)
+    if role not in ("owner","admin"): raise HTTPException(403,"Нет прав")
+    return await MembershipService.list_members(db, "channel", channel_id)
+
+@router.get("/{channel_id}/admins")
+async def get_channel_admins(channel_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    role = await MembershipService.get_role(db, "channel", channel_id, u.id)
+    if not role: raise HTTPException(403,"Нет доступа")
+    return await MembershipService.list_admins(db, "channel", channel_id)
+
+@router.delete("/{channel_id}/members/{user_id}")
+async def remove_channel_member(channel_id: int, user_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    actor_role = await MembershipService.get_role(db, "channel", channel_id, u.id)
+    target_role = await MembershipService.get_role(db, "channel", channel_id, user_id)
+    if not await MembershipService.has_permission(db, "channel", channel_id, u.id, "ban") or \
+            ROLE_RANK.get(actor_role,0) <= ROLE_RANK.get(target_role or "subscriber",0):
+        raise HTTPException(403,"Нет прав")
+    await MembershipService.remove_member(db, "channel", channel_id, user_id, actor_id=u.id)
+    await manager.send_to_user(user_id, {"type":"removed_from_channel","channel_id":channel_id})
+    return {"status":"ok"}
+
+@router.post("/{channel_id}/members/{user_id}/ban")
+async def ban_channel_member(channel_id: int, user_id: int, data: Optional[dict] = None,
+        u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    actor_role = await MembershipService.get_role(db, "channel", channel_id, u.id)
+    target_role = await MembershipService.get_role(db, "channel", channel_id, user_id)
+    if not await MembershipService.has_permission(db, "channel", channel_id, u.id, "ban") or \
+            ROLE_RANK.get(actor_role,0) <= ROLE_RANK.get(target_role or "subscriber",0):
+        raise HTTPException(403,"Нет прав")
+    await MembershipService.ban_member(db, "channel", channel_id, user_id, u.id, (data or {}).get("reason"))
+    await manager.send_to_user(user_id, {"type":"removed_from_channel","channel_id":channel_id,"banned":True})
+    return {"status":"ok"}
+
+@router.delete("/{channel_id}/members/{user_id}/ban")
+async def unban_channel_member(channel_id: int, user_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if not await MembershipService.has_permission(db, "channel", channel_id, u.id, "ban"): raise HTTPException(403,"Нет прав")
+    await MembershipService.unban_member(db, "channel", channel_id, user_id, actor_id=u.id)
+    return {"status":"ok"}
+
+@router.get("/{channel_id}/bans")
+async def get_channel_bans(channel_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    actor_role = await MembershipService.get_role(db, "channel", channel_id, u.id)
+    if actor_role not in ("owner","admin"): raise HTTPException(403,"Нет прав")
+    return await MembershipService.list_bans(db, "channel", channel_id)
+
+@router.post("/{channel_id}/members/{user_id}/mute")
+async def mute_channel_member(channel_id: int, user_id: int, data: dict, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    actor_role = await MembershipService.get_role(db, "channel", channel_id, u.id)
+    target_role = await MembershipService.get_role(db, "channel", channel_id, user_id)
+    if not await MembershipService.has_permission(db, "channel", channel_id, u.id, "mute") or \
+            ROLE_RANK.get(actor_role,0) <= ROLE_RANK.get(target_role or "subscriber",0):
+        raise HTTPException(403,"Нет прав")
+    minutes = data.get("minutes")
+    until = datetime.utcnow() + timedelta(minutes=minutes) if minutes else datetime.utcnow() + timedelta(days=3650)
+    await MembershipService.mute_member(db, "channel", channel_id, user_id, until, actor_id=u.id)
+    await manager.send_to_user(user_id, {"type":"member_muted","channel_id":channel_id,"muted_until":until.isoformat()+"Z"})
+    return {"status":"ok","muted_until":until.isoformat()+"Z"}
+
+@router.delete("/{channel_id}/members/{user_id}/mute")
+async def unmute_channel_member(channel_id: int, user_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if not await MembershipService.has_permission(db, "channel", channel_id, u.id, "mute"): raise HTTPException(403,"Нет прав")
+    await MembershipService.unmute_member(db, "channel", channel_id, user_id, actor_id=u.id)
+    return {"status":"ok"}
+
+@router.put("/{channel_id}/members/{user_id}/role")
+async def set_channel_member_role(channel_id: int, user_id: int, data: dict, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    ch = (await db.execute(select(Channel).where(Channel.id==channel_id))).scalar_one_or_none()
+    if not ch: raise HTTPException(404,"Канал не найден")
+    new_role = data.get("role")
+    if new_role not in ("admin","subscriber"): raise HTTPException(400,"Некорректная роль")
+    if user_id == ch.owner_id: raise HTTPException(400,"Нельзя изменить роль владельца")
+    if ch.owner_id != u.id:
+        target_role = await MembershipService.get_role(db, "channel", channel_id, user_id)
+        can_add_admins = await MembershipService.has_permission(db, "channel", channel_id, u.id, "add_admins")
+        if not (can_add_admins and new_role == "admin" and target_role in (None, "subscriber")):
+            raise HTTPException(403,"Нет прав")
+    ok = await MembershipService.set_role(db, "channel", channel_id, user_id, new_role, actor_id=u.id)
+    if not ok: raise HTTPException(404,"Пользователь не подписан на канал")
+    await manager.send_to_user(user_id, {"type":"role_changed","channel_id":channel_id,"role":new_role})
+    return {"status":"ok"}
+
+@router.put("/{channel_id}/members/{user_id}/permissions")
+async def set_channel_member_permissions(channel_id: int, user_id: int, data: dict,
+        u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    ch = (await db.execute(select(Channel).where(Channel.id==channel_id))).scalar_one_or_none()
+    if not ch or ch.owner_id != u.id: raise HTTPException(403,"Только владелец может настраивать права админов")
+    perms = set(data.get("permissions") or [])
+    ok = await MembershipService.set_permissions(db, "channel", channel_id, user_id, perms)
+    if not ok: raise HTTPException(400,"Пользователь не является админом")
+    await MembershipService.log_action(db, "channel", channel_id, u.id, "permissions_update",
+        target_user_id=user_id, details=",".join(sorted(perms & ALL_PERMISSIONS)))
+    await manager.send_to_user(user_id, {"type":"permissions_changed","channel_id":channel_id})
+    return {"status":"ok"}
+
+@router.put("/{channel_id}")
+async def update_channel(channel_id: int, data: dict, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    ch = (await db.execute(select(Channel).where(Channel.id==channel_id))).scalar_one_or_none()
+    if not ch: raise HTTPException(404,"Канал не найден")
+    if not await MembershipService.has_permission(db, "channel", channel_id, u.id, "change_info"): raise HTTPException(403,"Нет прав")
+    if "name" in data: ch.name = data["name"]
+    if "description" in data: ch.description = data["description"]
+    if "username" in data:
+        username = (data["username"] or "").strip().lstrip("@") or None
+        if username:
+            existing = (await db.execute(select(Channel).where(and_(Channel.username==username, Channel.id!=channel_id)))).scalar_one_or_none()
+            if existing: raise HTTPException(400,"Username уже занят")
+        ch.username = username
+    await db.commit()
+    await MembershipService.log_action(db, "channel", channel_id, u.id, "info_update")
+    sub_ids = (await db.execute(select(ChannelSubscriber.user_id).where(ChannelSubscriber.channel_id==channel_id))).scalars().all()
+    await manager.broadcast_to_users(list(set(sub_ids) | {ch.owner_id}),
+        {"type":"channel_updated","channel_id":channel_id,"name":ch.name,"description":ch.description,"username":ch.username})
+    return {"status":"ok","name":ch.name,"description":ch.description,"username":ch.username}
+
+@router.put("/{channel_id}/privacy")
+async def update_channel_privacy(channel_id: int, data: dict, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    ch = (await db.execute(select(Channel).where(Channel.id==channel_id))).scalar_one_or_none()
+    if not ch or ch.owner_id != u.id: raise HTTPException(403,"Только владелец может менять приватность")
+    if "is_public" in data: ch.is_public = bool(data["is_public"])
+    await db.commit()
+    await MembershipService.log_action(db, "channel", channel_id, u.id, "privacy_update")
+    return {"status":"ok","is_public":ch.is_public}
+
+@router.post("/{channel_id}/invite-links")
+async def create_channel_invite(channel_id: int, data: Optional[dict] = None, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if not await MembershipService.has_permission(db, "channel", channel_id, u.id, "invite"): raise HTTPException(403,"Нет прав")
+    data = data or {}
+    expires_at = datetime.utcnow() + timedelta(hours=data["expires_in_hours"]) if data.get("expires_in_hours") else None
+    link = await MembershipService.create_invite_link(db, "channel", channel_id, u.id, expires_at, data.get("max_uses"))
+    await MembershipService.log_action(db, "channel", channel_id, u.id, "invite_created")
+    return MembershipService.format_invite(link)
+
+@router.get("/{channel_id}/invite-links")
+async def list_channel_invites(channel_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    role = await MembershipService.get_role(db, "channel", channel_id, u.id)
+    if not role: raise HTTPException(403,"Нет доступа")
+    links = await MembershipService.list_invite_links(db, "channel", channel_id)
+    return [MembershipService.format_invite(l) for l in links]
+
+@router.delete("/{channel_id}/invite-links/{link_id}")
+async def revoke_channel_invite(channel_id: int, link_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if not await MembershipService.has_permission(db, "channel", channel_id, u.id, "invite"): raise HTTPException(403,"Нет прав")
+    ok = await MembershipService.revoke_invite_link(db, "channel", channel_id, link_id)
+    if not ok: raise HTTPException(404,"Ссылка не найдена")
+    await MembershipService.log_action(db, "channel", channel_id, u.id, "invite_revoked")
+    return {"status":"ok"}
+
+@router.get("/{channel_id}/audit-log")
+async def get_channel_audit_log(channel_id: int, u: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    role = await MembershipService.get_role(db, "channel", channel_id, u.id)
+    if role not in ("owner","admin"): raise HTTPException(403,"Нет прав")
+    return await MembershipService.list_audit_log(db, "channel", channel_id)

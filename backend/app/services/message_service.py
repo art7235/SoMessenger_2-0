@@ -2,6 +2,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from app.models.message import Message
 from app.models.reaction import Reaction
+from app.models.message_deletion import MessageDeletion
+from app.models.user import User
 from app.core.encryption import encrypt_text
 
 from app.services.notification_service import send_push_notification
@@ -49,10 +51,13 @@ class MessageService:
         return msg
 
     @staticmethod
-    async def get_chat_messages(db, chat_id, limit=50, offset=0, reply_to_id=None):
+    async def get_chat_messages(db, chat_id, limit=50, offset=0, reply_to_id=None, viewer_id=None):
         filters = [Message.chat_id==chat_id, Message.is_deleted==False]
         if reply_to_id is not None:
             filters.append(Message.reply_to_id==reply_to_id)
+        if viewer_id is not None:
+            hidden = select(MessageDeletion.message_id).where(MessageDeletion.user_id==viewer_id)
+            filters.append(Message.id.notin_(hidden))
         r = await db.execute(select(Message).where(*filters)
             .options(selectinload(Message.sender))
             .options(selectinload(Message.reactions))
@@ -90,11 +95,20 @@ class MessageService:
         return new_r, removed
 
     @staticmethod
-    async def delete_message(db, message_id, user_id):
+    async def delete_message(db, message_id, user_id, for_everyone=True):
         msg = (await db.execute(select(Message).where(Message.id==message_id))).scalar_one_or_none()
-        if msg and msg.sender_id==user_id:
-            msg.is_deleted=True; await db.commit(); return True
-        return False
+        if not msg: return False
+        if for_everyone:
+            if msg.sender_id != user_id: return False
+            msg.is_deleted = True
+            await db.commit()
+            return True
+        existing = (await db.execute(select(MessageDeletion).where(
+            MessageDeletion.message_id==message_id, MessageDeletion.user_id==user_id))).scalar_one_or_none()
+        if not existing:
+            db.add(MessageDeletion(message_id=message_id, user_id=user_id))
+            await db.commit()
+        return True
 
     @staticmethod
     async def edit_message(db, message_id, user_id, new_content):

@@ -37,7 +37,7 @@ async def _encrypt_existing_text_fields(db: AsyncSession):
 
 async def create_tables():
     async with engine.begin() as conn:
-        from app.models import user, chat, message, channel, sticker, reaction
+        from app.models import user, chat, message, channel, sticker, reaction, membership, message_deletion
         await conn.run_sync(Base.metadata.create_all)
 
         # Lightweight compatibility migration for deployments already running v5.
@@ -74,11 +74,58 @@ async def create_tables():
             await conn.execute(text("ALTER TABLE users ADD COLUMN last_seen DATETIME"))
         if not await has_column("users", "is_online"):
             await conn.execute(text("ALTER TABLE users ADD COLUMN is_online BOOLEAN DEFAULT 0"))
+        if not await has_column("users", "fcm_token"):
+            await conn.execute(text("ALTER TABLE users ADD COLUMN fcm_token VARCHAR(500)"))
+
+        # Zone 3 (groups/channels admin): roles, mutes, privacy+username for groups.
+        # role_column_is_new gates the one-time backfill below so re-running startup
+        # doesn't clobber roles that were already assigned/changed after the migration.
+        role_column_is_new = not await has_column("chat_members", "role")
+        if not await has_column("chats", "is_public"):
+            await conn.execute(text("ALTER TABLE chats ADD COLUMN is_public BOOLEAN DEFAULT 0"))
+        if not await has_column("chats", "username"):
+            await conn.execute(text("ALTER TABLE chats ADD COLUMN username VARCHAR(64)"))
+        if not await has_column("chats", "slow_mode_seconds"):
+            await conn.execute(text("ALTER TABLE chats ADD COLUMN slow_mode_seconds INTEGER DEFAULT 0"))
+        if role_column_is_new:
+            await conn.execute(text("ALTER TABLE chat_members ADD COLUMN role VARCHAR(20) DEFAULT 'member'"))
+        if not await has_column("chat_members", "muted_until"):
+            await conn.execute(text("ALTER TABLE chat_members ADD COLUMN muted_until DATETIME"))
+        if not await has_column("chat_members", "permissions"):
+            await conn.execute(text("ALTER TABLE chat_members ADD COLUMN permissions VARCHAR(255)"))
+        channel_role_column_is_new = not await has_column("channel_subscribers", "role")
+        if channel_role_column_is_new:
+            await conn.execute(text("ALTER TABLE channel_subscribers ADD COLUMN role VARCHAR(20) DEFAULT 'subscriber'"))
+        if not await has_column("channel_subscribers", "muted_until"):
+            await conn.execute(text("ALTER TABLE channel_subscribers ADD COLUMN muted_until DATETIME"))
+        if not await has_column("channel_subscribers", "permissions"):
+            await conn.execute(text("ALTER TABLE channel_subscribers ADD COLUMN permissions VARCHAR(255)"))
+        await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_chats_username_unique ON chats(username) WHERE username IS NOT NULL"))
 
         await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_chats_channel_id_unique ON chats(channel_id) WHERE channel_id IS NOT NULL"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_messages_channel_post_id ON messages(channel_post_id)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_messages_forward_from_id ON messages(forward_from_id)"))
     async with AsyncSessionLocal() as db:
+        if role_column_is_new:
+            await db.execute(text("UPDATE chat_members SET role='admin' WHERE is_admin=1"))
+            await db.execute(text("""
+                UPDATE chat_members SET role='owner'
+                WHERE user_id = (SELECT created_by FROM chats WHERE chats.id = chat_members.chat_id)
+            """))
+            await db.commit()
+        if channel_role_column_is_new:
+            await db.execute(text("""
+                INSERT INTO channel_subscribers (channel_id, user_id, role, created_at)
+                SELECT c.id, c.owner_id, 'owner', CURRENT_TIMESTAMP FROM channels c
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM channel_subscribers cs WHERE cs.channel_id = c.id AND cs.user_id = c.owner_id
+                )
+            """))
+            await db.execute(text("""
+                UPDATE channel_subscribers SET role='owner'
+                WHERE user_id = (SELECT owner_id FROM channels WHERE channels.id = channel_subscribers.channel_id)
+            """))
+            await db.commit()
         from app.models.sticker import StickerPack, Sticker
         r = await db.execute(select(StickerPack))
         if not r.scalars().first():

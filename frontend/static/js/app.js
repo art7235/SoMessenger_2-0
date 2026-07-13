@@ -77,6 +77,7 @@ async function startApp(user){
     document.getElementById('join-bar').style.display='none';
     await loadChats();
     connectWebSocket();
+    handleInviteHash();
     setTimeout(updateAppViewportHeight,50);
     console.log(`✅ Добро пожаловать, ${user.display_name}!`);
     

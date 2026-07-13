@@ -24,6 +24,9 @@ class ConnectionManager:
     async def broadcast_to_chat_members(self, member_ids: List[int], data: dict):
         for uid in member_ids:
             await self.send_to_user(uid, data)
+    async def broadcast_to_users(self, user_ids: List[int], data: dict):
+        for uid in user_ids:
+            await self.send_to_user(uid, data)
     def get_online_users(self) -> List[int]:
         return list(self.active_connections.keys())
 

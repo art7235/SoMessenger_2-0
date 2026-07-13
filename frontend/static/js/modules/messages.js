@@ -164,13 +164,35 @@ badge.onclick=(e)=>{e.stopPropagation();toggleReaction(msg.chat_id,msg.id,emoji)
 // Meta
 const meta=document.createElement('div');meta.className='message-meta'
 if(msg.is_edited){const e=document.createElement('span');e.className='message-edited';e.textContent='изм.';meta.appendChild(e)}
-meta.innerHTML+=formatTime(msg.created_at);wrapper.appendChild(meta)
+const timeEl=document.createElement('span');timeEl.textContent=formatTime(msg.created_at);meta.appendChild(timeEl)
+if(isOwn&&!msg._isPost){meta.appendChild(createMessageStatusEl(msg))}
+wrapper.appendChild(meta)
 
 // Context menu
 if(!msg._isPost){
 const bubble=wrapper.querySelector('.message-bubble')||wrapper
 bubble.oncontextmenu=(e)=>{e.preventDefault();showMessageActions(e,msg)}}
 return wrapper}
+
+function isMessageRead(msg){
+const map=window.currentChatReadMap
+if(!map)return false
+const ids=Object.values(map)
+if(ids.length===0)return false
+return ids.every(v=>v!=null&&v>=msg.id)}
+
+function createMessageStatusEl(msg){
+const read=isMessageRead(msg)
+const el=document.createElement('span');el.className='message-status'+(read?' read':'');el.dataset.msgId=msg.id
+el.innerHTML='<span class="chk chk1">✓</span><span class="chk chk2">✓</span>'
+return el}
+
+function refreshMessageStatuses(){
+document.querySelectorAll('.message-wrapper.outgoing .message-status').forEach(el=>{
+const mid=Number(el.dataset.msgId)
+const msg=window.currentMessages?.find(m=>m.id===mid)
+if(!msg)return
+el.classList.toggle('read',isMessageRead(msg))})}
 
 async function jumpToMessage(mid){
 if(!mid)return
@@ -296,9 +318,12 @@ const reactions=['👍','❤️','😂','😮','😢','🔥','🎉']
 let html=`<div class="context-reactions">${reactions.map(r=>`<button onclick="toggleReaction(${msg.chat_id},${msg.id},'${r}');closeMessageActions();event.stopPropagation()">${r}</button>`).join('')}</div>`
 html+=`<button class="delete-menu-btn" onclick="startReply(${msg.id})">↩️ Ответить</button>`
 html+=`<button class="delete-menu-btn" onclick="startForward(${msg.id})">↪️ Переслать</button>`
+if(msg.sender_id===currentUser.id&&msg.message_type==='text'&&!msg.forward_from){
+  html+=`<button class="delete-menu-btn" onclick="startEditMessage(${msg.id})">✏️ Редактировать</button>`
+}
+html+=`<button class="delete-menu-btn danger" onclick="deleteMessageForMe(${msg.chat_id},${msg.id})">🗑 Удалить у меня</button>`
 if(msg.sender_id===currentUser.id){
-  if(msg.message_type==='text'&&!msg.forward_from)html+=`<button class="delete-menu-btn" onclick="startEditMessage(${msg.id})">✏️ Редактировать</button>`
-  html+=`<button class="delete-menu-btn danger" onclick="deleteMessage(${msg.chat_id},${msg.id})">🗑 Удалить</button>`
+  html+=`<button class="delete-menu-btn danger" onclick="deleteMessageForEveryone(${msg.chat_id},${msg.id})">🗑 Удалить у всех</button>`
 }
 menu.innerHTML=html
 menu.style.display='block'
@@ -343,7 +368,21 @@ if(!m.contains(e.target)) m.style.display='none';
 }
 if(p&&!p.contains(e.target))p.style.display='none'})
 
-async function deleteMessage(cid,mid){document.getElementById('message-actions-menu').style.display='none';try{await api.deleteMessage(cid,mid);loadMessages(cid,true)}catch(e){showToast(e.message)}}
+async function deleteMessageForMe(cid,mid){
+document.getElementById('message-actions-menu').style.display='none'
+try{await api.deleteMessage(cid,mid,false);document.querySelector(`[data-message-id="${mid}"]`)?.remove()}
+catch(e){showToast(e.message)}}
+
+function deleteMessageForEveryone(cid,mid){
+const menu=document.getElementById('message-actions-menu')
+menu._openedAt=Date.now()
+menu.innerHTML=`<div class="confirm-delete-text">Удалить у всех?</div>
+<button class="delete-menu-btn" onclick="closeMessageActions()">Отмена</button>
+<button class="delete-menu-btn danger" onclick="confirmDeleteForEveryone(${cid},${mid})">Удалить у всех</button>`}
+
+async function confirmDeleteForEveryone(cid,mid){
+closeMessageActions()
+try{await api.deleteMessage(cid,mid,true)}catch(e){showToast(e.message)}}
 
 function startReply(mid){
 document.getElementById('message-actions-menu').style.display='none';const msg=window.currentMessages?.find(m=>m.id===mid);if(!msg)return
@@ -425,7 +464,7 @@ forwardSourceMsg=null;forwardSourcePost=null
 function startEditMessage(mid){document.getElementById('message-actions-menu').style.display='none';const msg=window.currentMessages?.find(m=>m.id===mid);if(!msg)return;editingMessage=msg;document.getElementById('edit-preview').style.display='flex';document.getElementById('edit-text').textContent=msg.content;document.getElementById('message-input').value=msg.content;document.getElementById('message-input').focus();handleInputChange()}
 function cancelEdit(){editingMessage=null;document.getElementById('edit-preview').style.display='none';document.getElementById('message-input').value='';handleInputChange()}
 function handleInputKeydown(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}}
-function handleInputChange(){const input=document.getElementById('message-input');const sendBtn=document.getElementById('send-btn');const voiceBtn=document.getElementById('voice-btn');sendBtn.style.display=input.value.trim().length>0?'flex':'none';voiceBtn.style.display=input.value.trim().length>0?'none':'flex';input.style.height='auto';input.style.height=Math.min(input.scrollHeight,120)+'px'}
+function handleInputChange(){const input=document.getElementById('message-input');const sendBtn=document.getElementById('send-btn');const voiceBtn=document.getElementById('voice-btn');const hasText=input.value.trim().length>0;sendBtn.style.display=hasText?'flex':'none';voiceBtn.style.display=hasText?'none':'flex';input.style.height='auto';input.style.height=Math.min(input.scrollHeight,120)+'px';if(hasText&&window.currentChatId&&!editingMessage)sendTypingIndicator(window.currentChatId)}
 function showAttachMenu(){const m=document.getElementById('attach-menu');m.style.display=m.style.display==='none'?'block':'none'}
 function markMessagesUserInteraction(){userTouchedMessagesAt=Date.now();if(pendingScrollTimer){clearTimeout(pendingScrollTimer);pendingScrollTimer=null}}
 function scrollToBottom(opts={}){
